@@ -1,0 +1,21 @@
+
+third_party_blob( "core", $winkit_blob_path, $winkit_blob_hash, nil ) do
+	class MSVCResourceCompiler < SingleFileCompiler		
+		def compile(infile, outfile)
+			if Helpers.newer? infile.path, outfile
+				include_dirs = @project.global_context.get_attribute_set(:resource_include_dirs)
+				Helpers.temp_env do |env|
+					@project.globals.set_vc_env.call(env)
+					rc_exe = @project.globals.mssdk_bin_path + 'rc.exe'
+
+					trace "RC: #{infile.path.basename}"
+					sh rc_exe, '/nologo', '/x', include_dirs.map {|id| ['/i', id.to_s.gsub('/','\\')]}, '-fo', outfile, infile.path
+				end
+			end
+		end
+	end
+
+	define_compiler(MSVCResourceCompiler, :input_pattern => tag('.rc'), :output_name => 'resource_compiler/%.res') do
+	end
+end
+

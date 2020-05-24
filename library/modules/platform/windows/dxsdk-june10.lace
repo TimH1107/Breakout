@@ -1,0 +1,33 @@
+
+raise "Unsupported platform" if get_target_platform != :win32
+
+third_party_blob( "core", "platform/windows/dxsdk-june10", "fdb99fc82c0544d9622c961325d4c10163aced7a", nil ) do
+
+	! directx.lace
+
+	section 'interface' do
+		export do
+			add_cpp_include_dir 'Include'
+
+			if @build_tags.include? ('debug')
+				add_cpp_define 'D3D_DEBUG_INFO'
+			end
+
+			if is_64bit_target
+				add_lib_dir 'Lib/' + 'x64'
+			else
+				add_lib_dir 'Lib/' + 'x86'
+			end
+		end
+
+		add_platform_header 'Include/**/*.h'
+		! Documentation/DirectX9/*.chm
+	end
+
+	section 'main' do
+		export { import '#interface' }
+
+		import 'platform/win32/mssdk'
+	end
+
+end

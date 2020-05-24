@@ -1,0 +1,20 @@
+
+raise "Unsupported platform" if get_target_platform() != :win32
+
+third_party_blob( "core", "platform/windows/dxsdk-june10", "fdb99fc82c0544d9622c961325d4c10163aced7a", nil ) do
+
+	section 'interface' do
+		export do
+			add_cpp_include_dir 'Include'
+
+			import 'platform/win32/mssdk'
+		end
+
+		add_platform_header 'Include/**/*.h'
+	end
+
+	section 'main' do
+		export { import '#interface' }
+	end
+
+end

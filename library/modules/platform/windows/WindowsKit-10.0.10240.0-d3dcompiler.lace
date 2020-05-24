@@ -1,0 +1,10 @@
+
+third_party_blob( "platform/windows/WindowsKit-10.0.10240.0", "ed7ef99390b8af6092a44688ec076393af9456c4", nil ) do
+
+	if is_64bit_target
+		add_dll 'bin/x64/d3dcompiler_47.dll'
+	else
+		add_dll 'bin/x86/d3dcompiler_47.dll'
+	end
+
+end

@@ -1,0 +1,1 @@
+win32, osx, android, ios, xb1, ps4, nx

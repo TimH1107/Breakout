@@ -1,0 +1,5 @@
+
+third_party_blob( "core", "platform/windows/dxsdk-june10", "fdb99fc82c0544d9622c961325d4c10163aced7a", nil ) do
+	add_dll ( './utilities/bin/x86/adpcmencode.exe' )	
+end
+

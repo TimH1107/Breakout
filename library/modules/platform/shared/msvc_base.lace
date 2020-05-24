@@ -1,0 +1,687 @@
+require 'open3'
+
+add_file Pathname.new(__FILE__).dirname + 'msvc_base.lace'
+
+def get_base_bin_dir( is1914 = false )
+	dir = ''
+	if @project.is_64bit_host
+		dir = is1914 ? 'Hostx64/x64' : 'amd64'
+	else
+		dir = case @project.get_target_cpu
+		when :x86
+			is1914 ? 'Hostx86/x86' : ''
+		when :x64, :arm32, :arm64
+			is1914 ? 'Hostx86/x64' : 'x86'
+		end
+	end
+
+	@project.globals.vc_dir + 'bin' + dir
+end
+
+def get_bin_dir( is1914 = false )
+	dir = ""
+
+	if @project.is_64bit_host
+		dir = case @project.get_target_cpu
+		when :x86
+			is1914 ? 'Hostx64/x86' : 'amd64_x86'
+		when :x64
+			is1914 ? 'Hostx64/x64' : 'amd64'
+		when :arm32
+			is1914 ? 'Hostx64/arm' : 'amd64_arm'
+		when :arm64
+			is1914 ? 'Hostx64/arm64' : 'amd64_arm'
+		end
+	else
+		dir = case @project.get_target_cpu
+		when :x86
+			is1914 ? 'Hostx86/x86' : ''
+		when :x64
+			is1914 ? 'Hostx86/x64' : 'x86_amd64'
+		when :arm32
+			is1914 ? 'Hostx86/arm' : 'x86_arm'
+		when :arm64
+			is1914 ? 'Hostx86/arm64' : 'x86_arm'
+		end
+	end
+
+	@project.globals.vc_dir + 'bin' + dir
+end
+
+def get_lib_dir( is1914 = false )
+	lib_dir = ""
+
+	case @project.get_target_platform
+	when :win32
+		case @project.get_target_cpu
+		when :x86
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/x86' : 'lib' )
+		when :x64
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/x64' : 'lib/amd64' )
+		when :arm32
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/arm' : 'lib/arm' )
+		when :arm64
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/arm64' : '?' )
+		end
+	when :uwp
+		case @project.get_target_cpu
+		when :x86
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/x86/store' : 'lib/store' )
+		when :x64
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/x64/store' : 'lib/store/amd64' )
+		when :arm32
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/arm/store' : 'lib/store/arm' )
+		when :arm64
+			lib_dir = @project.globals.vc_dir + ( is1914 ? 'lib/arm64/store' : '?' )
+		end
+	end
+
+	lib_dir
+end
+
+module MSVCCompilerBaseMixin
+	def set_msvc_env( env )
+		base_bin_dir = @project.globals.vc_base_bin_dir.to_s.gsub(/\//, '\\')
+		cpu_bin_dir = @project.globals.vc_bin_dir.to_s.gsub(/\//, '\\')
+		lib_dir = @project.globals.vc_lib_dir.to_s.gsub(/\//, '\\')
+		sdk_bin_dir = @project.globals.mssdk_bin_path.to_s.gsub(/\//, '\\')
+
+		new_env_path = base_bin_dir + ';'
+		if base_bin_dir != cpu_bin_dir
+			new_env_path += cpu_bin_dir + ';'
+		end
+		new_env_path += sdk_bin_dir
+		env['Path'] = new_env_path
+
+		case @project.get_target_platform
+		when :xb1
+			env.delete('LIBPATH')
+			env.delete('LIB')
+		end
+
+		if !lib_dir.empty?
+			env['LIB'] = '"' + lib_dir + '"'
+		end
+	end
+
+	def is_cxx_file(file)
+		return file.tags.include?('.cxx') || file.tags.include?('APP-XAML-CXX')
+	end
+
+	def get_exception_options(infile)
+		exception_options = []
+		if is_cxx_file(infile)
+			exception_options << '/EHsc'
+		else
+			if @project.global_context.get_attribute_value(:se_exceptions)
+				exception_options << '/EHa'
+			else
+				if @project.global_context.get_attribute_value(:cpp_exceptions)
+					exception_options << '/EHsc'
+				end
+			end
+			if not @project.global_context.get_attribute_value(:cpp_exceptions)
+				exception_options << "-D_HAS_EXCEPTIONS=0"
+			end
+		end
+		return exception_options
+	end
+
+	def get_unicode_defines()
+		unicode_defines = []
+		if @project.global_context.get_attribute_value(:unicode)
+			unicode_defines << "_UNICODE"
+			unicode_defines << "UNICODE"
+		end
+		return unicode_defines
+	end
+
+	def get_optimization_options(infile)
+		optimization = infile.context.get_attribute_value(:cpp_optimization)
+		optimization_options = case optimization
+		when :none, nil
+			['/Od']
+		when :full
+			['/O2b2ity']
+		else
+			optimization.split()
+		end
+		return optimization_options
+	end
+
+	def machine_name()
+		case @project.get_target_cpu
+		when :x86
+			'X86'
+		when :x64
+			'X64'
+		when :arm32
+			'ARM'
+		else
+			throw "Platform not supported: #{@project.get_target_cpu.to_s}"
+		end
+	end
+
+	def get_cl_exe()
+		@project.globals.vc_bin_dir + 'cl.exe'
+	end
+
+	def get_lib_exe()
+		@project.globals.vc_bin_dir + 'lib.exe'
+	end
+
+	def get_link_exe()
+		@project.globals.vc_bin_dir + 'link.exe'
+	end
+end
+
+class MSVCCompilerBase < SingleFileCompiler
+	include MSVCCompilerBaseMixin
+
+	def compiler_name
+		"MsvcCompiler"
+	end
+
+	def output_name(file)
+		prefix = file.context.get_output_prefix
+		@output_path + ( prefix + file.path.basename( '.*' ).to_s + ".obj" )
+	end
+
+	def make_command_line_array(infile,outfile)
+		system_include_dirs = infile.context.get_attribute_set(:cpp_system_include_dir).map {|d| ['/I', d.path.to_s.gsub(/\//, '\\')] }
+		include_dirs = infile.context.get_attribute_set(:cpp_include_dir).map {|d| ['/I', d.path.to_s.gsub(/\//, '\\')] }
+		assembly_search_pathes = infile.context.get_attribute_set(:cxx_assembly_search_path).map {|d| '/AI "' + d.path.to_s.gsub(/\//, '\\') + '"' }
+		system_assembly_files = infile.context.get_attribute_set(:cxx_system_assembly_file).map {|d| '/FU ' + d.path.to_s.gsub(/\//, '\\') }
+		low_prio_include_dirs = infile.context.get_attribute_set(:low_prio_cpp_include_dir).map {|d| ['/I', d.path.to_s.gsub(/\//, '\\')] }
+		defines = collect_cpp_defines( infile.context ).map {|d| ['/D', d] }
+		warn_level = '/W' + (infile.context.get_attribute_value(:cpp_warning_level) || 'all').to_s
+		disabled_warnings = get_disabled_warnings(infile)
+		ignore_warnings  = infile.context.get_attribute_value(:ignore_warnings) == true
+		enable_ms_extensions = infile.context.get_attribute_value(:msvc_enable_ms_extensions) == true
+		enable_openmp = infile.context.get_attribute_value(:enable_openmp) == true
+		enable_bigobj = infile.context.get_attribute_value(:enable_bigobj) == true
+		enable_rtti = infile.context.get_attribute_value(:cpp_rtti) == true
+		fast_math = infile.context.get_attribute_value(:fast_math) == true
+		enable_cppcw = is_cxx_file(infile)
+
+		system_defines = []
+		system_defines += get_platform_defines
+		system_defines += get_cpu_defines
+		system_defines += get_unicode_defines
+
+		system_options = []
+		system_options += get_platform_options
+		system_options += get_exception_options(infile)
+		system_options += get_cpu_options
+		system_options += get_optimization_options(infile)
+
+		if !@project.globals.use_crt
+			system_defines += [ '_CRT_NO_VA_START_VALIDATION' ]
+			system_options += [ '/GS-', '/Gs100000000' ]	# /Gs100000000 avoids calls to _chkstk
+		else
+			system_options += [ '/Gs' ]
+		end
+
+		result = [
+			'/nologo',
+			@build_type_switch,
+			warn_level,
+			disabled_warnings,
+			ignore_warnings ? '/WX-' : '/WX',
+			system_include_dirs,
+			assembly_search_pathes,
+			system_assembly_files,
+			include_dirs,
+			low_prio_include_dirs,
+			defines,
+			system_defines.map {|d| ['/D', d] },
+			@project.is_debug_code_enabled ? ['/D_DEBUG'] : ['/DNDEBUG'],
+			enable_bigobj ? '/bigobj' : '',
+			enable_openmp ? '/openmp' : '',
+			enable_rtti ? '/GR' : '/GR-',
+			#enable_ms_extensions || enable_cppcw ? [] : ['/Za'],
+			enable_cppcw ? ['/ZW:nostdlib', '/ZW'] : [],
+			is_arm_build ? ['/volatile:ms'] : [],
+			system_options,
+			'/Zi',		# always create a pdb
+			'/analyze-',
+			'/Zc:wchar_t',
+			'/Zc:forScope',
+			'/Zc:inline',
+			#'/P',		# dump preprocessed code in .i file
+			'/Gm-',			# no minimal rebuilds
+			'/errorReport:prompt',
+			'/showIncludes',
+			'/c',
+			fast_math ? '/fp:fast' : '',
+			'/Fd' + ( @project.build_path.to_s + '/' ).gsub('/','\\'),
+			'/Fo' + make_relative(outfile).to_s.gsub(/\//, '\\'),
+			infile.path.to_s.gsub(/\//, '\\')
+		]
+
+		return result
+	end
+
+	def output_files(files)
+		files.map do |f|
+			tags = @output_tags.dup
+			tags << 'APP-CX' if is_cxx_file(f)
+			
+			ignore_ext = false
+			if f.tags.include?('APP-XAML-CXX')
+				tags << 'APP-OBJ'
+				ignore_ext = true
+			end
+
+			InputFile.new(output_name(f), tags, f.context, ignore_ext)
+		end
+	end
+
+	def process_files(files, num_jobs)
+		@build_type_switch = get_build_type_switch
+
+		output_names = files.map{|f| output_name(f)}
+		dfiles = output_names.map{|o| o.to_s.sub(/\.obj/, '.d')}
+		loadDependencyFiles( dfiles )
+
+		Helpers::temp_env do |env|
+			set_msvc_env( env )
+			# just included so that this env variable will be removed after compiling
+			env['INCLUDE'] = ""
+			env.delete('VS_UNICODE_OUTPUT')
+
+			super(files, num_jobs)
+		end
+	end
+
+	def compile(infile, outfile)
+		dfile = outfile.to_s.sub(/\.obj/, '.d')
+
+		exe_path = get_cl_exe()
+		check_optimized_dependencies(infile.path, dfile, exe_path, infile.context.attribute_hash) do
+
+			trace "Compiling(msvc#{@project.globals.msvc_version},#{@project.get_target_cpu.to_s}) %s", infile.path
+
+			dependencies = Dependencies.new
+			dependencies.add_output(outfile)
+			dependencies.add_input(infile.path.to_s)
+			dependencies.add_input(exe_path)
+
+			command_line = make_command_line_array( infile, outfile )
+
+			sh exe_path.to_s.gsub(/\//, '\\'), command_line do |lines|
+				for line in lines
+					case line
+					when /^Note: including file:\s+(.*)$/
+						dependencies.add_input($1)
+						#puts line
+					when /^[\w.]+\.c(pp|xx)?$/
+					else
+						trace "%s", line
+					end
+				end
+			end
+
+			write_optimized_dependencies(dependencies,dfile,infile.context.attribute_hash)
+		end
+	end
+
+	def get_build_type_switch
+		link_type = @project.globals.msvc_link_type
+		threading_type = @project.globals.msvc_threading_type
+
+		if threading_type != :multi and threading_type != :single
+			abort_build "You have to specify a threading type. Use set_build_options()!"
+		end
+
+		if  link_type == :dynamic
+			build_type = '/MD' if threading_type == :multi
+		elsif link_type == :static
+			build_type = '/ML' if threading_type == :single
+			build_type = '/MT' if threading_type == :multi
+		else
+			abort_build "You have to specify a link type. Use set_build_options()!"
+		end
+
+		if build_type
+			if @project.is_debug_code_enabled
+				build_type = build_type + 'd'
+			end
+		else
+			raise "Invalid combination of link type and threading type. (#{link_type}, #{threading_type})"
+		end
+
+		if !@project.globals.use_crt
+			build_type = ""
+		end
+
+		return build_type
+	end
+
+	def is_arm_build()
+		return (@project.get_target_cpu == :arm32) || (@project.get_target_cpu == :arm64)
+	end
+
+	def get_platform_defines()
+		platform_defines = []
+		platform_defines << '_WINSOCK_DEPRECATED_NO_WARNINGS'
+		platform_defines << '_HAS_CONSTEXPR=0'
+		platform_defines << '_SECURE_SCL_DEPRECATE=0'
+		return platform_defines
+	end
+
+	def get_platform_options()
+		platform_options = []
+		platform_options << '/FS'
+		platform_options << (@project.build_tags.include?('master') ? '/Zo-' : '/Zo')
+		return platform_options
+	end
+
+	def get_cpu_defines()
+		cpu_defines = []
+		case @project.get_target_cpu
+		when :x86
+			cpu_defines << '_X86_'
+		when :x64
+			cpu_defines << '_AMD64_'
+		when :arm32
+			cpu_defines << '_ARM_'
+			cpu_defines << '_ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1'
+		when :arm64
+			cpu_defines << '_ARM64_'
+			cpu_defines << '_ARM_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1'
+		end
+		return cpu_defines
+	end
+
+	def get_cpu_options()
+		cpu_options = []
+		case @project.get_target_cpu
+		when :x86
+			cpu_options << '/arch:SSE2'
+		end
+		return cpu_options
+	end
+
+	def get_disabled_platform_warnings()
+		disabled_warnings = []
+		if is_arm_build()
+			disabled_warnings << 4746	# volatile access of '<expression>' is subject to /volatile:[iso|ms] setting; consider using __iso_volatile_load/store intrinsic functions.
+		end
+
+		return disabled_warnings
+	end
+
+	def get_disabled_warnings(infile)
+		disabled_warnings = infile.context.get_attribute_set(:msvc_disabled_warnings)
+
+		disabled_warnings << 4625	# copy constructor could not be generated because base class copy constructor is inaccessible.
+		disabled_warnings << 4626	# assignment operator could not be generated because base class assignment operator is inaccessible.
+		disabled_warnings << 4511	# copy constructor could not be generated (probably base class copy constructor is inaccessible)
+		disabled_warnings << 4512	# assignment operator could not be generated (probably base class assignment operator is inaccessible)
+		disabled_warnings << 4355	# 'this': used in base member initializer list -> this is ok, ex. with EventSignal
+
+		# these warnings are over the top, we don't want to use them because it gets tedious / ridiculous
+		disabled_warnings << 4061	# enumerator X in switch is not explicitly handled
+		disabled_warnings << 4206	# the file was empty after preprocessing
+
+		# these are informational about optimizing and performance, would be nice to have as an info / diagnostics level, but not for the day-to-day work.
+		disabled_warnings << 4820	# padding added to struct members
+		disabled_warnings << 4514	# unreferenced inline function has been removed
+		disabled_warnings << 4710	# function not inlined
+		disabled_warnings << 4711	# 'selected for automatic inline expansion'
+		disabled_warnings << 4505	# unreferenced local function has been removed
+
+		disabled_warnings << 4738	# 'storing 32-bit float result in memory, possible loss of performance'
+
+		disabled_warnings << 4619	# 'there is no warning number xxx'
+
+		disabled_warnings << 4986	# 'operator new[]': exception specification does not match previous declaration
+
+		# we would probably want to have the following alive, but we can't due to crt / c++ lib bugs from M$.
+		disabled_warnings << 4548	# 'expression before comma has no effect; expected expression with side-effect' -> unfortunately, the stl brings up this warning.
+		disabled_warnings << 4702	# 'unreachable code' -> because of the sucking msvc stl implementation!
+		disabled_warnings << 4555   # 'expression has no side effect; expected expression with side-effect' - thrown by msvc/include/list
+
+		# these should not be in the default disabled set. Check if they can be removed.
+		disabled_warnings << 4640	# construction of local static object is not thread safe
+		disabled_warnings << 4245	# conversion from const value to value signed / unsigned mismatch.
+		disabled_warnings << 4571	# 'Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught'
+		disabled_warnings << 4987	# nonstandard extension used: 'throw (...)'
+
+		disabled_warnings << 4350	# behavior change:
+		disabled_warnings << 4471	# a forward declaration of an unscoped enumeration must have an underlying type
+
+		disabled_warnings << 4668	# '' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+		disabled_warnings << 4464	# relative include path contains '..'
+
+		disabled_warnings << 4310	# cast truncates constant value
+		disabled_warnings << 4324	# structure was padded due to alignment specifier
+
+		if @project.globals.msvc_version >= 19
+			disabled_warnings << 5026	# move constructor was implicitly defined as deleted
+			disabled_warnings << 5027	# move assignment operator was implicitly defined as deleted
+			disabled_warnings << 5031	# #pragma warning(pop): likely mismatch, popping warning state pushed in different file
+			disabled_warnings << 5032	# detected #pragma warning(push) with no corresponding #pragma warning(pop)
+			disabled_warnings << 5038	# data member '' will be initialized after data member ''
+			disabled_warnings << 5045	# Compiler will insert Spectre mitigation for memory load if /Qspectre switch specified
+			disabled_warnings << 4365	# signed/unsigned mismatch
+			disabled_warnings << 5039	# pointer or reference to potentially throwing function passed to extern C function under -EHc. Undefined behavior may occur if this function throws an exception.
+
+			disabled_warnings << 4774	# 'sprintf_s' : format string expected in argument 3 is not a string literal
+		end
+
+		disabled_warnings += get_disabled_platform_warnings
+
+		return disabled_warnings.map {|w| '/wd' + w.to_s}
+	end
+end
+
+class MSVCLinkerBase < CompilerBase
+	include MSVCCompilerBaseMixin
+
+	def compiler_name
+		"MsvcLinker"
+	end
+
+	def output_base_name(ext)
+		@output_path + ((@project.globals.target_name || @project.name) + ext)
+	end
+
+	def output_name
+		case @project.globals.win32_target
+		when :dll
+			target_extension = @project.globals.target_extension || '.dll'
+		when :exe
+			target_extension = @project.globals.target_extension || '.exe'
+		when :lib
+			target_extension = @project.globals.target_extension || '.lib'
+		end
+		output_base_name(target_extension)
+	end
+
+	def get_winmd_only_mode
+		false
+	end
+
+	def process_files(files, num_jobs)
+
+		outfiles = []
+		if @project.get_target_platform == :uwp
+			outfiles << output_base_name('.winmd')
+		end
+
+		if !get_winmd_only_mode
+			outfiles << output_base_name('.pdb')
+			outfiles << output_name
+		else
+			files.each do |file|
+				outfiles << file.path
+			end
+		end
+
+		compile(files) if Helpers.newer?(files, outfiles)
+	end
+
+	def output_files(files)
+		tags = []
+		tags << 'APP-PACKAGE' if @project.get_target_platform != :win32 && !get_winmd_only_mode
+
+		outfiles = []
+		if @project.get_target_platform == :uwp
+			file_tags = tags + (get_winmd_only_mode ? ['APP-XAML'] : [])
+			outfiles << InputFile.new(output_base_name('.winmd'), file_tags, @project.global_context)
+		end
+
+		if !get_winmd_only_mode
+			outfiles << InputFile.new(output_base_name('.pdb'), [], @project.global_context)
+			outfiles << InputFile.new(output_name, tags, @project.global_context)
+		else
+			files.each do |file|
+				file_tags = file.tags + tags + (file.tags.include?('.obj') ? ['APP-OBJ'] : [])
+				file_tags.delete_if{ |t| t.to_s[0] == "." }
+				outfiles << InputFile.new(file.path, file_tags, file.context, true)
+			end
+		end
+
+		return outfiles
+	end
+
+	def create_lib(infiles, subsystem)
+		file_name = File.join( output_name.dirname, 'cpp_compiler', output_name.basename(".*").to_s + '.lib' )
+
+		Helpers.temp_env do |env|
+			trace 'liberation...'
+
+			files = infiles
+			if @project.get_target_platform == :uwp
+				files = files.select{ |f| f.tags.include?('APP-OBJ') }
+			end
+
+			response_sh get_lib_exe(),
+				'/NOLOGO',
+				'/OUT:' + file_name.to_s,
+				'/SUBSYSTEM:' + subsystem,
+				'/MACHINE:' + machine_name(),
+				files.map { |f| f.path }
+		end
+
+		return file_name
+	end
+
+	def compile(infiles)
+		Helpers.temp_env do |env|
+			set_msvc_env(env)
+			env.delete('VS_UNICODE_OUTPUT')
+
+			lib_dirs = @project.global_context.get_attribute_set(:lib_dir)
+			low_prio_lib_dirs = @project.global_context.get_attribute_set(:low_prio_lib_dir)
+			libs = @project.global_context.get_attribute_set(:libs)
+			exclude_libs = @project.global_context.get_attribute_set(:excludelibs)
+			subsystem = @project.globals.win32_subsystem
+
+			libs += get_platform_libs
+
+			if @project.globals.target_configuration == :static_library
+				linktarget = @project.globals.win32_target || :exe
+				#disabled_warnings = get_disabled_warnings()
+				#disabled_warnings = []
+				#disabled_warnings <<  4221 # This object file does not define any previously undefined public symbols, so it will not be used by any link operation that consumes this library
+
+				trace "Lib #{output_name.basename.to_s}"
+
+				response_sh get_lib_exe(),
+					'/OUT:' + output_name.to_s,
+					'/NOLOGO',
+					'/WX:NO',
+					infiles.map {|f| f.path },
+					#disabled_warnings,
+					#exclude_libs.map {|e| '/NODEFAULTLIB:' + e},
+					lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+					low_prio_lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+					libs
+			else
+				if @project.get_target_platform == :xb1 || @project.get_target_platform == :uwp
+					subsystem = 'WINDOWS'
+
+					cpp_objects = infiles.select { |file| !file.tags.include?('APP-CX') }
+					infiles.keep_if { |file| file.tags.include? 'APP-CX' }
+					
+					if !get_winmd_only_mode
+						libs << create_lib(cpp_objects, subsystem)
+					end
+				end
+
+				linktarget = @project.globals.win32_target || :exe
+				disabled_warnings = get_disabled_warnings()
+
+				def_files = infiles.select {|i| i.tags.include? '.def'}
+				abort_build 'Only 1 .def might be added to the source tree' if def_files.size > 1
+				infiles.delete(*def_files) if def_files.size == 1
+				if linktarget == :dll
+					dll_commands = ['/DLL']
+					dll_commands << '/DEF:' + def_files[0].path.to_s if (def_files.size == 1)
+				else
+					dll_commands = []
+				end
+
+				manifest_options = get_manifest_options()
+
+				if not @project.is_64bit_target
+					laa_options = [ '/LARGEADDRESSAWARE' ]
+				else
+					laa_options = []
+				end
+
+				if @project.build_tags.include?('release') || @project.build_tags.include?('master')
+					incremental_link = '/INCREMENTAL:NO'
+				else
+					incremental_link = '/INCREMENTAL'
+				end
+
+				system_options = []
+				system_options += get_platform_options
+
+				trace get_winmd_only_mode ? 'create winmd...' : 'linking...'
+				response_sh get_link_exe(),
+					@project.globals.use_crt ? '' : '/NODEFAULTLIB',
+					'/NOLOGO',
+					'/OUT:' + output_name.to_s,
+					dll_commands,
+					manifest_options,
+					laa_options,
+					incremental_link,
+					disabled_warnings,
+					exclude_libs.map {|e| '/NODEFAULTLIB:' + e},
+					system_options,
+					lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+					low_prio_lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+					subsystem ? '/SUBSYSTEM:' + subsystem : [],
+					'/MACHINE:' + machine_name(),
+					libs,
+					infiles.map {|f| f.path }
+			end
+		end
+	end
+
+	def get_platform_options()
+		return [ '/DEBUG', '/DEBUGTYPE:cv' ]
+	end
+
+	def get_platform_libs()
+		[]
+	end
+
+	def get_manifest_options()
+		return ['/MANIFEST:NO']
+	end
+
+	def get_disabled_warnings()
+		disabled_warnings = @project.global_context.get_attribute_set(:msvc_disabled_linker_warnings)
+
+		# fun fact: unignorable (http://www.geoffchappell.com/studies/msvc/link/link/options/ignore.htm)
+		disabled_warnings << 4099	# PDB 'vc100.pdb' was not found with '...'
+
+		return disabled_warnings.map {|w| '/ignore:' + w.to_s}
+	end
+end

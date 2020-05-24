@@ -1,0 +1,18 @@
+
+! sdl.lace
+
+
+section 'interface' do
+	export do
+		add_cpp_include_dir 'include'
+	end
+	! include/SDL2/*.h
+end
+
+section 'main' do
+	export { import '#interface' }
+
+	add_lib_dir 'lib/x64'
+	add_lib 'SDL2.lib'
+	! lib/x64/SDL2.dll COPY_BINARY
+end

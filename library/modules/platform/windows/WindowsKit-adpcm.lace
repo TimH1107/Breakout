@@ -1,0 +1,9 @@
+
+third_party_blob( "core", $winkit_blob_path, $winkit_blob_hash, nil ) do
+	if @project.is_64bit_host
+		add_dll './bin/x64/adpcmencode3.exe'
+	else
+		add_dll './bin/x86/adpcmencode3.exe'
+	end
+end
+

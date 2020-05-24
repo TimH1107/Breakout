@@ -1,0 +1,2 @@
+C:\Users\lenovo\Desktop\BasicCodingTestVS\code\local\test\build\Debug\CodingTest.exe
+C:\Users\lenovo\Desktop\BasicCodingTestVS\code\local\test\build\Debug\CodingTest.pdb

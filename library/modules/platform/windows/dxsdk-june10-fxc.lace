@@ -1,0 +1,87 @@
+
+third_party_blob( "core", "platform/windows/dxsdk-june10", "fdb99fc82c0544d9622c961325d4c10163aced7a", nil ) do
+
+	bin_dir = base_path() + 'Utilities/bin/x86/'
+	@project.globals.directX_bin_dir = bin_dir
+
+	# define shader compiler
+	class DirectXShaderCompiler < SingleFileCompiler
+		def compile(infile, outfile)
+
+			is_fragment_shader = infile.tags.include?( '.fsh' ) || infile.tags.include?( '.fs' )
+			is_vertex_shader = infile.tags.include?( '.vsh' ) || infile.tags.include?( '.vs' )
+
+			dependencyFileName = is_fragment_shader ? outfile.to_s.sub(/\.fso/, '.fso.d') : outfile.to_s.sub(/\.vso/, '.vso.d')
+
+			check_optimized_dependencies(infile.path, dependencyFileName) do
+				include_dirs = infile.context.get_attribute_set(:shader_include_dir).map {|d| ['-I', d] }
+			
+				defines = infile.context.get_attribute_set(:shader_define).map {|d| ['-D', d] }
+				defines << ( is_fragment_shader ? "-DKEEN_FRAGMENT_SHADER=1" : "-DKEEN_VERTEX_SHADER=1" )
+				defines << "-DKEEN_HLSL=1"
+			
+				optimization = infile.context.get_attribute_value(:shader_optimization)
+				optimization_options = case optimization
+				when :none, nil
+					['/Od', '/Zi' ]
+				when :full
+					['/O3']
+				else
+					optimization.split()
+				end
+			
+				targetprofile = '/T', is_fragment_shader ? 'ps_4_0' : 'vs_4_0'			
+				#entrypoint = '/E', is_fragment_shader ? 'fs_main' : 'vs_main'
+				entrypoint = '/Emain'
+				trace "hlsl(sm4.0) %s", infile.path
+			
+				dx_fxc_path = @project.globals.directX_bin_dir + 'fxc.exe'
+
+				sh dx_fxc_path,
+					'/nologo',				
+					optimization_options,
+					defines,
+					'/Zpr',					# Pack matrices in row-major order.
+					targetprofile,
+					entrypoint,
+					'/Ges',					# strict mode
+					'/Op',					# disable preshader				
+					include_dirs,
+					'-DKEEN_PLATFORM_WIN32',				
+					'/Fo' + outfile.to_s, infile.path do |lines|			
+						for line in lines
+							# filter boring stuff:
+							error_msg = /^(.*)\((\d+),(\d+)\): error\s*([^:]*):(.*)$/.match( line )
+							warning_msg = /^(.*)\((\d+),(\d+)\): warning\s*([^:]*):(.*)$/.match( line )						
+							if error_msg
+								printf "%s(%s): error %s: %s\n", File.absolute_path( error_msg[1], File.dirname( infile.path.to_s ) ).gsub( '/', '\\' ), error_msg[2], error_msg[4], error_msg[5]
+							elsif warning_msg
+								printf "%s(%s): warning %s: %s\n", File.absolute_path( warning_msg[1], File.dirname( infile.path.to_s ) ).gsub( '/', '\\' ), warning_msg[2], warning_msg[4], warning_msg[5]
+							else
+								if not /^compilation succeeded; see(.*?)/.match( line )							
+									trace "%s", line
+								end
+							end
+						end
+					end
+
+				# build dependency file:
+				sh @project.globals.cdep_path,
+					dependencyFileName,
+					outfile.to_s,
+					infile.path.to_s,
+					include_dirs.join(';')
+			end
+		end
+	end
+
+	if not is_test_build()
+
+		define_compiler(DirectXShaderCompiler, :input_pattern => tag('.vsh')|tag('.vs'), :output_name => 'shader/%.vso') do
+		end
+
+		define_compiler(DirectXShaderCompiler, :input_pattern => tag('.fsh')|tag('.fs'), :output_name => 'shader/%.fso') do
+		end
+
+	end
+end

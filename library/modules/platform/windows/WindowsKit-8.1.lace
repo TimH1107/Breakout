@@ -1,0 +1,50 @@
+
+$winkit_version = "8.1"
+$winkit_blob_path = "platform/windows/WindowsKit-8.1"
+$winkit_blob_hash = "d37b51c324ae9dbd202236bdf1fe524a4c3a73d0"
+
+third_party_blob( "core", $winkit_blob_path, $winkit_blob_hash, nil ) do
+	@project.globals.wk_dir = base_path()
+
+	export do
+		#add_attribute :msvc_disabled_warnings, 4668 # 'symbol' is not defined as a preprocessor macro, replacing with '0' for 'directives'
+
+		add_attribute :msvc_disabled_warnings, 4917 # '' : a GUID can only be associated with a class, interface or namespace
+		#add_attribute :msvc_disabled_warnings, 6102 # Using 'dpiCompensationEffect' from failed function call at line '879'.: Lines: 870, 871, 873, 879, 881, 890, 895, 900, 905
+		enable_msvc_cpp_extensions
+
+		add_cpp_include_dir 'include'
+
+		add_path :low_prio_cpp_include_dir, 'Include/um'
+		add_path :low_prio_cpp_include_dir, 'Include/shared'
+
+		add_global_path :resource_include_dirs, 'Include/um'
+		add_global_path :resource_include_dirs, 'Include/shared'
+	end
+
+	if is_64bit_target
+		add_global_path :low_prio_lib_dir, 'Lib/winv6.3/um/x64'
+	else
+		add_global_path :low_prio_lib_dir, 'Lib/winv6.3/um/x86'
+	end
+
+	if is_64bit_host
+		@project.globals.mssdk_bin_path = base_path() + 'bin/x64'
+	else
+		@project.globals.mssdk_bin_path = base_path() + 'bin/x86'
+	end
+
+	add_platform_header 'include/um/**/*.h'
+	add_platform_header 'include/shared/**/*.h'
+
+	if is_64bit_target
+		add_dll 'Debuggers/x64/dbghelp.dll'
+	else
+		#add_dll 'Debuggers/x86/dbghelp.dll'
+		#puts 'Warning: x86 is currently not supported. Please update blob.'
+	end
+	
+	if @project.get_target_platform == :win32
+		import 'platform/win32/resourcecompiler'
+	end
+end

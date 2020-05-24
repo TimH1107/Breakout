@@ -1,0 +1,4 @@
+
+section 'main' do
+	export { import 'platform/win32/mssdk' }
+end

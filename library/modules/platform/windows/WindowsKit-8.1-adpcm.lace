@@ -1,0 +1,4 @@
+
+third_party_blob( "core", "platform/windows/WindowsKit-8.1", "d37b51c324ae9dbd202236bdf1fe524a4c3a73d0", nil ) do
+	add_dll './bin/x86/adpcmencode.exe'
+end

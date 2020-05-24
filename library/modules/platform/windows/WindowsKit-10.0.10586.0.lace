@@ -1,0 +1,81 @@
+support_core_dumps = get_module_option_value( :core_dumps, false )
+
+$winkit_version = "10.0.10586.0"
+$winkit_blob_path = "platform/windows/WindowsKit-10.0.10586.0"
+$winkit_blob_hash = "1aa0e3d97f35db6ab41772ea00e80829888ab97f"
+
+third_party_blob( "core", $winkit_blob_path, $winkit_blob_hash, nil ) do
+	@project.globals.wk_dir = base_path()
+
+	export do
+		#add_attribute :msvc_disabled_warnings, 4668 # 'symbol' is not defined as a preprocessor macro, replacing with '0' for 'directives'
+
+		add_attribute :msvc_disabled_warnings, 4917 # '' : a GUID can only be associated with a class, interface or namespace
+
+		add_attribute :msvc_enable_ms_extensions, true
+
+		add_cpp_include_dir 'include'
+
+		add_path :low_prio_cpp_include_dir, "Include/#{$winkit_version}/um"
+		add_path :low_prio_cpp_include_dir, "Include/#{$winkit_version}/shared"
+		add_path :low_prio_cpp_include_dir, "Include/#{$winkit_version}/winrt"
+
+		add_global_path :resource_include_dirs, "Include/#{$winkit_version}/um"
+		add_global_path :resource_include_dirs, "Include/#{$winkit_version}/shared"
+	end
+
+	add_global_path :cpp_system_include_dir, "Include/#{$winkit_version}/ucrt"
+
+	if get_target_platform == :nx
+		add_global_path :cpp_system_include_dir, "Include/#{$winkit_version}/shared"
+		add_global_path :cpp_system_include_dir, "Include/#{$winkit_version}/um"
+	end
+
+	if get_target_platform == :uwp
+		add_global_path :cpp_system_include_dir, "Include/#{$winkit_version}/winrt"
+		add_global_path :cxx_system_assembly_file, "UnionMetadata/Windows.winmd"
+	end
+
+	case get_target_cpu
+	when :x86
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/km/x86"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/um/x86"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/ucrt/x86"
+	when :x64
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/km/x64"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/um/x64"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/ucrt/x64"
+	when :arm32
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/km/arm"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/um/arm"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/ucrt/arm"
+	when :arm64
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/km/arm64"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/um/arm64"
+		add_global_path :low_prio_lib_dir, "Lib/#{$winkit_version}/ucrt/arm64"
+	end
+
+	if is_64bit_host
+		@project.globals.mssdk_bin_path = base_path() + 'bin/x64'
+	else
+		@project.globals.mssdk_bin_path = base_path() + 'bin/x86'
+	end
+
+	add_platform_header "Include/#{$winkit_version}/um/**/*.h"
+	add_platform_header "Include/#{$winkit_version}/shared/**/*.h"
+
+	if @project.get_target_platform == :win32
+		build_cpu = @project.get_target_cpu
+
+		if support_core_dumps
+			add_dll "Debuggers/#{build_cpu}/srcsrv/dbghelp.dll"
+			add_dll "Debuggers/#{build_cpu}/srcsrv/dbgcore.dll"
+		end
+
+		if @project.is_debug_code_enabled
+			add_dll "bin/#{build_cpu}/ucrt/ucrtbased.dll"
+		end
+		
+		import 'platform/win32/resourcecompiler'
+	end
+end

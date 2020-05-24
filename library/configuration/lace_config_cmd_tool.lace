@@ -1,0 +1,38 @@
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_cmd_tool.lace', ''
+
+module_search_path local_dir + '../modules'
+
+
+export do
+	@project.globals.unity_build = true
+
+	enable_cpp_exceptions
+	enable_cpp_rtti
+
+	# enable assertions in release builds:
+	add_global_attribute :cpp_define, "KEEN_USE_TRACE=1"
+#	add_global_attribute :cpp_define, 'KEEN_USE_ASSERTS' # todo: check if we want this..
+
+	module_options 'compiler/common', :disable_version_compiler => true
+
+	module_options 'runtime/base', :trace_to_stdout => true
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :enable_memory_tracker => is_debug_build ? true : false
+	module_options 'runtime/base', :use_custom_ftos => false	
+	module_options 'runtime/debugui', :enable_ui => false
+
+	import 'compiler/common'
+	import 'runtime/base'
+
+	import "platform/#{@project.get_target_platform}"
+
+	case get_target_platform
+	when :win32
+		add_attribute :msvc_disabled_warnings, 4668 # '' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+		add_attribute :msvc_disabled_warnings, 4917 # '' : a GUID can only be associated with a class, interface or namespace
+		@project.globals.win32_subsystem = 'CONSOLE'
+	end
+end

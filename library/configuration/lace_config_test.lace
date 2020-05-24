@@ -1,0 +1,56 @@
+
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_test.lace', ''
+
+module_search_path local_dir + '../modules'
+
+@project.globals.unity_build = true
+
+@test_target_platforms = []
+
+@test_target_platforms += [ "win32_x86" ] if can_build_platform( :win32 )
+@test_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+#@test_target_platforms += [ "linux_x86" ] if can_build_platform( :linux )
+@test_target_platforms += [ "linux_x64" ] if can_build_platform( :linux )
+#@test_target_platforms += [ "osx_x64" ] if can_build_platform( :osx )
+@test_target_platforms += [ "ps4" ] if can_build_platform( :ps4 )
+@test_target_platforms += [ "xb1" ] if can_build_platform( :xb1 )
+@test_target_platforms += [ "nx" ] if can_build_platform( :nx )
+#@test_target_platforms += [ "nx_win32" ] if can_build_platform( :nx )
+@test_target_platforms += [ "android_arm32" ] if can_build_platform( :android )
+@test_target_platforms += [ "android_arm64" ] if can_build_platform( :android )
+@test_target_platforms += [ "ios_arm32" ] if can_build_platform( :ios )
+
+@test_target_platforms += [ "uwp_x86", "uwp_x64", "uwp_arm32", "uwp_arm64" ] if can_build_platform( :uwp )
+
+@test_configurations = @test_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+#module_options 'compiler/common', :disable_version_compiler => true
+module_options 'compiler/dataschema', :write_type_description => true
+module_options 'compiler/common', :create_license_file => true
+
+import 'compiler/common'
+import 'compiler/dataschema'
+import 'compiler/memorylayout'
+import 'compiler/shader'
+
+import "platform/#{@project.get_target_platform}"
+
+case @project.get_target_platform
+when :win32
+	module_options 'platform/win32/mssdk', :core_dumps => true
+when :ios
+	import 'config/codesign'
+end
+
+case @build_tags
+when tag('release')
+
+	# activate traces in release builds:
+	export do
+		# enable traces in release builds:
+		add_global_attribute :cpp_define, "KEEN_USE_TRACE=1"
+	end
+end

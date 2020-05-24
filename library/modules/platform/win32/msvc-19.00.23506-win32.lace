@@ -1,0 +1,78 @@
+inject '../shared/msvc_base.lace'
+
+! msvc-19.00.23506-win32.lace
+
+if @project.get_target_platform != :win32
+	abort_build( 'This Compiler can just used for Win32 builds!' );
+end
+
+third_party_blob( "core", "platform/windows/msvc-190023506", "00e47abf2f2a8c320ecbbc0a831e83529ceb8bbb", nil ) do
+
+	vc_dir = base_path()
+
+	@project.globals.set_vc_env = proc do |env|
+		path_dirs = (vc_dir + 'bin').to_s.gsub(/\//, '\\')
+		env['Path'] = path_dirs
+		if is_64bit_target
+			env['LIB'] = '"' + (vc_dir + 'lib/amd64').to_s.gsub(/\//, '\\') + '"'
+		else
+			env['LIB'] = '"' + (vc_dir + 'lib').to_s.gsub(/\//, '\\') + '"'
+		end
+	end
+
+	@project.globals.msvc_version = 19
+	@project.globals.vc_dir = vc_dir
+	@project.globals.vc_base_bin_dir = get_base_bin_dir()
+	@project.globals.vc_bin_dir = get_bin_dir()
+
+	add_global_path :resource_include_dirs, 'include'
+	add_global_path :cpp_system_include_dir, 'include'
+
+	if @project.get_target_platform == :uwp
+		add_global_path :cpp_system_assembly_file, 'lib/store/references/platform.winmd'
+	end
+
+	# OpenMP libraries
+	if @project.global_context.get_attribute_value(:enable_openmp)
+		if is_64bit_target
+			if(@project.is_debug_code_enabled())
+				add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC140.DebugOpenMP/vcomp140d.dll'
+			else
+				add_dll 'redist/x64/Microsoft.VC140.OPENMP/vcomp140.dll'
+			end
+		else
+			if(@project.is_debug_code_enabled())
+				add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC140.DebugOpenMP/vcomp140d.dll'
+			else
+				add_dll 'redist/x86/Microsoft.VC140.OPENMP/vcomp140.dll'
+			end
+		end
+	end
+
+	# copy the debug runtime dlls over to be able to run the debug build
+	if @project.globals.use_crt && @project.is_debug_code_enabled()		
+		if is_64bit_target
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC140.DebugCRT/concrt140d.dll'
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC140.DebugCRT/msvcp140d.dll'
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC140.DebugCRT/vcruntime140d.dll'
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC140.DebugCRT/vccorlib140d.dll'
+		else
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC140.DebugCRT/concrt140d.dll'
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC140.DebugCRT/msvcp140d.dll'
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC140.DebugCRT/vcruntime140d.dll'
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC140.DebugCRT/vccorlib140d.dll'
+		end
+	end
+
+	class MSVCCompiler < MSVCCompilerBase
+	end
+
+	class MSVCLinker < MSVCLinkerBase
+	end
+
+	define_compiler(MSVCCompiler, :input_pattern => tag('.cpp') | tag('.c'), :dependency_pattern => tag('.hpp') | tag('.h'), :output_name => 'cpp_compiler/%.obj') do
+	end
+
+	define_compiler(MSVCLinker, :input_pattern => tag('.obj') | tag('.res') | tag('.def'), :output_tags => ['.exe', '.dll', '.pdb']) do
+	end
+end

@@ -1,0 +1,41 @@
+
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_converter.lace', ''
+
+module_search_path local_dir + '../modules'
+
+@converter_target_platforms = []
+@converter_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+@converter_target_platforms += [ "linux_x64" ] if can_build_platform( :linux )
+@converter_target_platforms += [ "osx_x64" ] if can_build_platform( :osx )
+
+@converter_configurations = @converter_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+export do
+	@project.globals.unity_build = true
+	@project.globals.win32_subsystem = 'CONSOLE'
+
+	enable_cpp_rtti
+
+	module_options 'runtime/base', :trace_to_stdout => true
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :enable_memory_tracker => is_debug_build ? true : false
+	module_options 'runtime/file', :enable_zip_file => true
+	module_options 'runtime/base', :use_custom_ftos => false
+
+	module_options 'runtime/debugui', :enable_ui => false
+
+	module_options 'compiler/common', :disable_version_compiler => true
+	module_options 'compiler/common', :create_converter_registry => true
+
+	# enable traces in release builds:
+	add_global_attribute :cpp_define, "KEEN_USE_TRACE=1"
+#	add_global_attribute :cpp_define, 'KEEN_USE_ASSERTS' 	# todo: do we want this?
+
+	import 'compiler/common'
+	import 'compiler/dataschema'
+
+	import "platform/#{get_target_platform}"
+end

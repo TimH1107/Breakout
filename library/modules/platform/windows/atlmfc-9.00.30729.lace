@@ -1,0 +1,68 @@
+
+third_party_blob( "core", "platform/windows/atlmfc-9.00.30729", "ce50637f426c4b8c6d43fb925542bbc3dc4d99a1", nil ) do
+
+	if not @build_tags.empty?
+		raise 'Do not include atlmfc in platforms other than win32.' unless get_target_platform == :win32
+	end
+
+	add_global_attribute :cpp_define, 'KEEN_PLATFORM_MFC=1', '_BIND_TO_CURRENT_MFC_VERSION=1'
+
+	# exclude and re-add the mfc and crt lib in the right order to avoid linker errors
+
+	if @project.globals.msvc_link_type == :static && !@build_tags.include?('debug')
+		add_global_attribute :libs, 'nafxcw.lib', 'libcmt.lib'
+		add_global_attribute :excludelibs, 'nafxcw.lib', 'libcmt.lib'
+	end
+
+	export do
+		add_path :cpp_include_dir, 'include'
+
+		if @project.globals.msvc_link_type == :dynamic
+			add_attribute :cpp_define, '_AFXDLL'
+
+			if @build_tags.include? 'debug'
+				add_global_path :dlls, 'debug_nonredist/x86/Microsoft.VC90.DebugMFC/mfc90d.dll'
+				add_global_path :dlls, 'debug_nonredist/x86/Microsoft.VC90.DebugMFC/mfcm90d.dll'
+				add_global_path :dlls, 'debug_nonredist/x86/Microsoft.VC90.DebugMFC/Microsoft.VC90.DebugMFC.manifest'
+			else
+				add_global_path :dlls, 'redist/x86/Microsoft.VC90.MFC/mfc90.dll'
+				add_global_path :dlls, 'redist/x86/Microsoft.VC90.MFC/mfcm90.dll'
+				add_global_path :dlls, 'redist/x86/Microsoft.VC90.MFC/Microsoft.VC90.MFC.manifest'			
+			end
+
+		end
+	end
+
+	add_platform_header 'include/**/*.h'
+	add_platform_header 'src/**/*.cpp'
+		
+	if is_64bit_target
+		add_global_path :lib_dir, 'lib/amd64'
+	else
+		add_global_path :lib_dir, 'lib'
+	end
+
+	add_global_path :resource_include_dirs, 'include'
+
+	export do
+		# '/wd4263 /wd4264',	# 'member function does not override any base class virtual member function' -> mfc projects dont compile
+		# '/wd4917',				# 'a GUID can only be associated with a class, interface or namespace' -> mssdk produces this with mfc projects
+		# '/wd4529',				# 'forming a pointer-to-member requires explicit use of the address-of operator ('&') and a qualified name' -> mfc
+		# '/wd4191',			# 'unsafe conversion from 'type of expression' to 'type required'' -> mfc
+		add_attribute :msvc_disabled_warnings, 4263, 4264, 4917, 4529, 4191	# for mfc7
+
+		# '/wd4365				# 'argument' : conversion from 'int' to 'UINT', signed/unsigned mismatch
+		# /wd4266				# no override available for virtual member function from base 'CException'; function is hidden
+		# /wd4555				# expression has no effect; expected expression with side-effect
+		add_attribute :msvc_disabled_warnings, 4365, 4266, 4555	# for mfc9
+
+		# disable more warnings in release builds
+		if !@build_tags.include? 'debug'
+			add_attribute :msvc_disabled_warnings,  4548, 4555	# for mfc7 release builds in addition to the debug mfc ones
+		end
+
+		add_lib 'Winspool.lib'
+		add_lib 'comdlg32.lib'
+	end
+
+end

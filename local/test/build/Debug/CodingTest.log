@@ -1,0 +1,10 @@
+﻿  actor.cpp
+  ball.cpp
+  block.cpp
+  game.cpp
+  gamebase.cpp
+  gift.cpp
+  racket.cpp
+  Generating Code...
+  CodingTest.vcxproj -> C:\Users\lenovo\Desktop\BasicCodingTestVS\code\local\test\build\Debug\CodingTest.exe
+          1 file(s) copied.

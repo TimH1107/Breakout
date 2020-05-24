@@ -1,0 +1,50 @@
+
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_maxplugin.lace', ''
+
+module_search_path local_dir + '../modules'
+
+@tool_target_platforms = []
+@tool_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+@tool_configurations = @tool_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+export do
+	@project.globals.unity_build = true
+	@project.globals.win32_subsystem = 'WINDOWS'
+
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :enable_memory_tracker => is_debug_build ? true : false
+	module_options 'runtime/debugui', :enable_ui => false
+
+	module_options 'platform/win32', :msvc_version => 16
+
+	set_msvc_build_options( :static, :multi )
+	enable_cpp_exceptions()
+	enable_cpp_rtti()
+
+	set_msvc_target( :dll )
+	set_msvc_target_extension( ".dle" )
+
+	add_global_attribute :msvc_disabled_warnings, 4996, 4668, 4365
+
+	add_lib 'winspool.lib', 'comdlg32.lib', 'gdi32.lib', 'user32.lib', 'comctl32.lib', 'core.lib', 'geom.lib', 'gfx.lib', 'mesh.lib', 'maxutil.lib', 'maxscrpt.lib', 'manipsys.lib', 'paramblk2.lib', 'gup.lib', 'IGame.lib'
+
+	import 'compiler/common'
+
+	import 'platform/win32'
+	import 'platform/win32/mssdk'
+	import 'platform/win32/atlmfc'
+
+	if not @build_tags.empty?
+		case @build_tags
+		when tag('max2014')
+			import 'third_party/maxsdk/maxsdk-2014.lace'
+		when tag('max2015')
+			import 'third_party/maxsdk/maxsdk-2015.lace'
+		else
+			raise 'Invalid 3D Studio Max Version has to be one of (max2014,max2015)'
+		end
+	end
+end

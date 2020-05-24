@@ -1,0 +1,52 @@
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_qt_tool.lace', ''
+
+module_search_path local_dir + '../modules'
+
+@tool_target_platforms = []
+@tool_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+@tool_target_platforms += [ "linux_x64" ] if can_build_platform( :linux )
+#@tool_target_platforms += [ "osx_x64" ] if can_build_platform( :osx )
+
+@tool_configurations = @tool_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+export do
+	@project.globals.unity_build = true
+
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :enable_memory_tracker => is_debug_build ? true : false
+
+	@project.globals.msvc_link_type = :dynamic
+	@project.globals.msvc_threading_type = :multi
+
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :use_custom_ftos => false
+	module_options 'runtime/debugui', :enable_ui => false
+
+	enable_msvc_cpp_extensions
+	enable_cpp_rtti
+	enable_cpp_pic
+
+	import "platform/#{@project.get_target_platform}"
+
+	case get_target_platform
+	when :win32
+		@project.globals.win32_subsystem = 'WINDOWS'
+		@project.globals.msvc_link_type = :dynamic
+
+	when :linux
+		module_options 'runtime/base', :trace_to_stdout => true
+
+	when :osx
+		module_options 'runtime/base', :trace_to_stdout => true
+	end
+
+	# enable traces in release builds:
+	add_global_attribute :cpp_define, "KEEN_USE_TRACE=1"
+
+	import 'compiler/common'
+	import 'runtime/base'
+	import 'third_party/qt'
+end

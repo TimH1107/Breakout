@@ -1,0 +1,441 @@
+require 'open3'
+
+third_party_blob( "core", "platform/windows/msvc-180031101", "748983c3a02db1e954821619d364c2fe388ed829", nil ) do
+
+	vc_dir = base_path()
+	@project.globals.vc_dir = vc_dir
+
+	#puts "@project.globals.vc_dir=#{@project.globals.vc_dir}"
+
+	@project.globals.set_vc_env = proc do |env|
+		path_dirs = (vc_dir + 'bin').to_s.gsub(/\//, '\\')
+		env['Path'] = path_dirs
+		if is_64bit_target
+			env['LIB'] = '"' + (vc_dir + 'lib/amd64').to_s.gsub(/\//, '\\') + '"'
+		else
+			env['LIB'] = '"' + (vc_dir + 'lib').to_s.gsub(/\//, '\\') + '"'
+		end
+	end
+
+	module MSVCCompilerMixin
+
+		def getExceptionParameter()
+			exception_attributes = @project.global_context.get_attribute_value(:se_exceptions)
+			if exception_attributes
+				return '/EHa'
+			else
+				exception_attributes = @project.global_context.get_attribute_value(:cpp_exceptions)
+				if exception_attributes
+					return '/EHsc'
+				end
+			end
+			return ''
+		end
+
+		def getUnicodeParameter()
+			unicode_attributes = @project.global_context.get_attribute_value(:unicode)
+			if unicode_attributes
+				defines = []
+				defines << "_UNICODE"
+				defines << "UNICODE"
+				return defines.map {|d| ['/D', d] }
+			else
+				return ''
+			end
+
+		end
+
+		def get_cl_exe()
+			if @project.is_64bit_target
+				@project.globals.vc_dir + 'bin/amd64/cl.exe'
+			else
+				@project.globals.vc_dir + 'bin/cl.exe'
+			end
+		end
+
+		def get_lib_exe()
+			if @project.is_64bit_target
+				@project.globals.vc_dir + 'bin/amd64/lib.exe'
+			else
+				@project.globals.vc_dir + 'bin/lib.exe'
+			end
+		end
+
+	end
+
+	class MSVCCompiler < SingleFileCompiler
+		include MSVCCompilerMixin
+
+		def output_name(file)
+			prefix = file.context.get_output_prefix
+			@output_path + ( prefix + file.path.basename( '.*' ).to_s + ".obj" )
+		end
+
+		def join_command_line(*args)
+			cmds = args.flatten.map do |arg|
+				case arg
+				when Pathname, InputFile
+					make_relative(arg.path)
+				when Set
+					arg.to_a
+				else
+					arg.to_s
+				end
+			end
+
+			return cmds.map {|a| / / =~ a ? '"'+a+'"' : a}.join(' ')
+		end
+
+		def make_command_line_array(infile,outfile)
+			system_include_dirs = infile.context.get_attribute_set(:cpp_system_include_dir).map {|d| ['/I', d] }
+			include_dirs = infile.context.get_attribute_set(:cpp_include_dir).map {|d| ['/I', d] }
+			low_prio_include_dirs = infile.context.get_attribute_set(:low_prio_cpp_include_dir).map {|d| ['/I', d] }
+			defines = collect_cpp_defines( infile.context ).map {|d| ['/D', d] }
+			warn_level = '/W' + (infile.context.get_attribute_value(:cpp_warning_level) || 'all').to_s
+			disabled_warnings = get_disabled_warnings(infile)
+			ignore_warnings  = infile.context.get_attribute_value(:ignore_warnings) == true
+			enable_ms_extensions = infile.context.get_attribute_value(:msvc_enable_ms_extensions) == true
+			enable_openmp = infile.context.get_attribute_value(:enable_openmp) == true
+			enable_bigobj = infile.context.get_attribute_value(:enable_bigobj) == true
+			enable_rtti = infile.context.get_attribute_value(:cpp_rtti) == true
+
+			optimization = infile.context.get_attribute_value(:cpp_optimization)
+			optimization_options = case optimization
+			when :none, nil
+				['/Od']
+			when :full
+				['/O2b2ity', '/Gs']
+			else
+				optimization.split()
+			end
+
+			unicode_parameter = getUnicodeParameter()
+			result = [ '/nologo',
+				@project.build_tags.include?('master') ? '' : '/Zo',
+				@build_type_switch,
+				warn_level,
+				disabled_warnings,
+				ignore_warnings ? '/WX-' : '/WX',
+				system_include_dirs,
+				include_dirs,
+				low_prio_include_dirs,
+				defines,
+				'/D_WINSOCK_DEPRECATED_NO_WARNINGS',	# (=)=)
+				@project.is_debug_code_enabled ? '/D_DEBUG' : '/DNDEBUG',
+				@project.is_64bit_target ? [] : '/arch:SSE2',
+				@project.global_context.get_attribute_value(:cpp_exceptions) ? '' : "-D_HAS_EXCEPTIONS=0",
+				# '/d1reportAllClassLayout',
+				# '/d1reportSingleClassLayoutMyAwesomeTestClass',
+				enable_bigobj == true ? '/bigobj' : '',
+				enable_ms_extensions == true ? '' : '/Za',
+				optimization_options,
+				enable_openmp == true ? '/openmp' : '',
+				enable_rtti ? '/GR' : '/GR-',
+				getExceptionParameter,
+				unicode_parameter,
+				'/analyze-',
+				#'/analyze',
+				'/Zc:wchar_t',
+				'/Zc:forScope',
+				#'/Zi',
+				'/Gm-',			# no minimal rebuilds
+				'/errorReport:prompt',
+				'/showIncludes', '/WX', '/Z7', '/c', '/Fo' + make_relative(outfile), infile.path.to_s ]
+			return result
+		end
+
+		def process_files(files, num_jobs)
+			@build_type_switch = get_build_type_switch
+
+			output_names = files.map{|f| output_name(f)}
+			dfiles = output_names.map{|o| o.to_s.sub(/\.obj/, '.d')}
+			loadDependencyFiles( dfiles )
+
+			Helpers::temp_env do |env|
+				@project.globals.set_vc_env.call(env)
+				# just included so that this env variable will be removed after compiling
+				env['INCLUDE'] = ""
+				env.delete('VS_UNICODE_OUTPUT')
+
+				super(files, num_jobs)
+			end
+		end
+
+		def compile(infile, outfile)
+			dfile = outfile.to_s.sub(/\.obj/, '.d')
+
+			exe_path = get_cl_exe()
+			check_optimized_dependencies(infile.path, dfile, exe_path) do
+
+				if @project.is_64bit_target
+					trace "Compiling(msvc18,x64) %s", infile.path
+				else
+					trace "Compiling(msvc18,x86) %s", infile.path
+				end
+
+				dependencies = Dependencies.new
+				dependencies.add_output(outfile)
+				dependencies.add_input(infile.path.to_s)
+				dependencies.add_input(exe_path)
+
+				command_line = make_command_line_array( infile, outfile )
+
+				sh exe_path, command_line do |lines|
+					for line in lines
+						case line
+						when /^Note: including file:\s+(.*)$/
+							dependencies.add_input($1)
+							#puts line
+						when /^\w+\.c(pp)?$/
+						else
+							trace "%s", line
+						end
+					end
+				end
+
+				write_optimized_dependencies(dependencies,dfile)
+			end
+		end
+
+		def get_build_type_switch
+
+			link_type = @project.globals.msvc_link_type
+			threading_type = @project.globals.msvc_threading_type
+
+			if threading_type != :multi and threading_type != :single
+				abort_build "You have to specify a threading type. Use set_build_options()!"
+			end
+
+			if  link_type == :dynamic
+				build_type = '/MD' if threading_type == :multi
+			elsif link_type == :static
+				build_type = '/ML' if threading_type == :single
+				build_type = '/MT' if threading_type == :multi
+			else
+				abort_build "You have to specify a link type. Use set_build_options()!"
+			end
+
+			if build_type
+				if @project.is_debug_code_enabled
+					build_type = build_type + 'd'
+				end
+			else
+				raise "Invalid combination of link type and threading type. (#{link_type}, #{threading_type})"
+			end
+
+			return build_type
+		end
+
+		def get_disabled_warnings(infile)
+			disabled_warnings = infile.context.get_attribute_set(:msvc_disabled_warnings)
+
+			disabled_warnings << 4625	# copy constructor could not be generated because base class copy constructor is inaccessible.
+			disabled_warnings << 4626	# assignment operator could not be generated because base class assignment operator is inaccessible.
+			disabled_warnings << 4511	# copy constructor could not be generated (probably base class copy constructor is inaccessible)
+			disabled_warnings << 4512	# assignment operator could not be generated (probably base class assignment operator is inaccessible)
+			disabled_warnings << 4355	# 'this': used in base member initializer list -> this is ok, ex. with EventSignal
+
+			# these warnings are over the top, we don't want to use them because it gets tedious / ridiculous
+			disabled_warnings << 4061	# enumerator X in switch is not explicitly handled
+			disabled_warnings << 4206	# the file was empty after preprocessing
+
+			# these are informational about optimizing and performance, would be nice to have as an info / diagnostics level, but not for the day-to-day work.
+			disabled_warnings << 4820	# padding added to struct members
+			disabled_warnings << 4514	# unreferenced inline function has been removed
+			disabled_warnings << 4710	# function not inlined
+			disabled_warnings << 4711	# 'selected for automatic inline expansion'
+			disabled_warnings << 4505	# unreferenced local function has been removed
+
+			disabled_warnings << 4738	# 'storing 32-bit float result in memory, possible loss of performance'
+
+			disabled_warnings << 4619	# 'there is no warning number xxx'
+
+			disabled_warnings << 4986	# 'operator new[]': exception specification does not match previous declaration
+
+			# we would probably want to have the following alive, but we can't due to crt / c++ lib bugs from M$.
+			disabled_warnings << 4548	# 'expression before comma has no effect; expected expression with side-effect' -> unfortunately, the stl brings up this warning.
+			disabled_warnings << 4702	# 'unreachable code' -> because of the sucking msvc stl implementation!
+			disabled_warnings << 4555   # 'expression has no side effect; expected expression with side-effect' - thrown by msvc/include/list
+
+			# these should not be in the default disabled set. Check if they can be removed.
+			disabled_warnings << 4640	# construction of local static object is not thread safe
+			disabled_warnings << 4245	# conversion from const value to value signed / unsigned mismatch.
+			disabled_warnings << 4571	# 'Informational: catch(...) semantics changed since Visual C++ 7.1; structured exceptions (SEH) are no longer caught'
+			disabled_warnings << 4987	# nonstandard extension used: 'throw (...)'
+
+			disabled_warnings << 4350 # behavior change:
+			disabled_warnings << 4471 # a forward declaration of an unscoped enumeration must have an underlying type
+
+ 			disabled_warnings << 4668 # '' is not defined as a preprocessor macro, replacing with '0' for '#if/#elif'
+
+			return disabled_warnings.map {|w| '/wd' + w.to_s}
+		end
+
+		def output_files(files)
+			super(files)
+		end
+	end
+
+	class MSVCLinker < MultiFileCompiler
+		include MSVCCompilerMixin
+
+		def output_name		
+			is_dll = @project.globals.win32_target == :dll
+			target_extension = @project.globals.target_extension || (is_dll ? '.dll' : '.exe')
+			@output_path + ((@project.globals.target_name || @project.name) + target_extension)
+		end
+
+		def output_files(files)
+			[InputFile.new(output_name, [], @project.global_context)]
+		end
+
+		def run_mt
+			trace 'creating manifest'
+
+			return
+
+			manifest_files = [output_name.to_s + '.manifest']
+
+			manifest_files.each do |f|
+				trace 'using ' + f.to_s
+			end
+
+			sh @project.globals.vc_dir + 'bin/mt.exe', '-nologo', '-manifest', manifest_files, '-outputresource:' + output_name.to_s + ';1'
+		end
+
+		def compile(infiles)
+			infiles.select! {|i| !i.tags.include? '.lib'}
+			Helpers.temp_env do |env|
+				env.delete('VS_UNICODE_OUTPUT')
+				@project.globals.set_vc_env.call(env)
+				lib_dirs = @project.global_context.get_attribute_set(:lib_dir)
+				low_prio_lib_dirs = @project.global_context.get_attribute_set(:low_prio_lib_dir)
+				libs = @project.global_context.get_attribute_set(:libs)
+				exclude_libs = @project.global_context.get_attribute_set(:excludelibs)
+				subsystem = @project.globals.win32_subsystem
+
+				if @project.globals.target_configuration == :static_library
+					linktarget = @project.globals.win32_target || :exe
+					#disabled_warnings = get_disabled_warnings()
+					#disabled_warnings = [] 					
+					#disabled_warnings <<  4221 # This object file does not define any previously undefined public symbols, so it will not be used by any link operation that consumes this library
+
+					trace "Lib #{output_name.basename.to_s}"
+					
+					response_sh get_lib_exe(),
+						'/OUT:' + output_name.to_s,
+						'/NOLOGO',
+						'/WX:NO',
+						infiles.map {|f| f.path }, 												
+						#disabled_warnings,
+						#exclude_libs.map {|e| '/NODEFAULTLIB:' + e},
+						lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+						low_prio_lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+						libs					
+				else
+					linktarget = @project.globals.win32_target || :exe
+					disabled_warnings = get_disabled_warnings()
+
+					def_files = infiles.select {|i| i.tags.include? '.def'}
+					abort_build 'Only 1 .def might be added to the source tree' if def_files.size > 1
+					infiles.delete(*def_files) if def_files.size == 1
+					if linktarget == :dll
+						dll_commands = ['/DLL']
+						dll_commands << '/DEF:' + def_files[0].path.to_s if (def_files.size == 1)
+					else
+						dll_commands = []
+					end
+
+					#if (@project.globals.msvc_uac_options)
+					#	dll_commands << '/MANIFEST'
+					#	dll_commands << '/MANIFESTUAC:' + @project.globals.msvc_uac_options.to_s
+					#end
+
+					dll_commands << '/MANIFEST:NO'
+
+					if @project.is_64bit_target
+						laa_options = [ '/LARGEADDRESSAWARE' ]
+					else
+						laa_options = []
+					end
+
+					if @project.build_tags.include?('release') || @project.build_tags.include?('master')
+						incremental_link = '/INCREMENTAL:NO'
+					else
+						incremental_link = '/INCREMENTAL'
+					end
+
+				trace 'linking'
+				response_sh get_cl_exe(),
+						'/nologo',
+						infiles.map {|f| f.path }, '/Fe' + output_name.to_s,
+						'/link',
+						dll_commands,
+						laa_options,
+						incremental_link,
+						disabled_warnings,
+						'/debug', '/debugtype:cv',
+						exclude_libs.map {|e| '/NODEFAULTLIB:' + e},
+						lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+						low_prio_lib_dirs.map {|d| '/libpath:' + Helpers::quote_path(d) },
+						libs,
+						subsystem ? '/SUBSYSTEM:' + subsystem : []
+				end
+			end
+		end
+
+		def get_disabled_warnings()
+			disabled_warnings = @project.global_context.get_attribute_set(:msvc_disabled_linker_warnings)
+
+			# fun fact: unignorable (http://www.geoffchappell.com/studies/msvc/link/link/options/ignore.htm)
+			disabled_warnings << 4099	# PDB 'vc100.pdb' was not found with '...'
+
+			return disabled_warnings.map {|w| '/ignore:' + w.to_s}
+		end
+	end
+
+	add_global_path :resource_include_dirs, 'include'
+	add_global_path :cpp_system_include_dir, 'include'
+	add_global_path :cpp_system_include_dir, '.'
+
+	if @project.global_context.get_attribute_value(:enable_openmp) == true
+		#puts 'OpenMP support enabled'
+		if is_64bit_target
+			if(@project.is_debug_code_enabled())
+				add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC120.DebugOpenMP/vcomp120d.dll'
+			else
+				add_dll 'redist/x64/Microsoft.VC120.OPENMP/vcomp120.dll'
+			end
+		else
+			if(@project.is_debug_code_enabled())
+				add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC120.DebugOpenMP/vcomp120d.dll'
+			else
+				add_dll 'redist/x86/Microsoft.VC120.OPENMP/vcomp120.dll'
+			end
+		end
+	end
+
+	define_compiler(MSVCCompiler, :input_pattern => tag('.cpp') | tag('.c'), :dependency_pattern => tag('.hpp') | tag('.h'), :output_name => 'cpp_compiler/%.obj') do
+	end
+
+
+	define_compiler(MSVCLinker, :input_pattern => tag('.obj')|tag('.res')|tag('.def')|tag('.lib'), :output_tags => ['.exe', '.dll', '.lib']) do
+	end
+
+	# copy the debug runtime dlls over to be able to run the debug build
+	if @project.is_debug_code_enabled()
+		if is_64bit_target
+			#add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC120.DebugCRT/msvcm120d.dll'
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC120.DebugCRT/msvcp120d.dll'
+			add_dll 'redist/Debug_NonRedist/x64/Microsoft.VC120.DebugCRT/msvcr120d.dll'
+		else
+			#add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC120.DebugCRT/msvcm120d.dll'
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC120.DebugCRT/msvcp120d.dll'
+			add_dll 'redist/Debug_NonRedist/x86/Microsoft.VC120.DebugCRT/msvcr120d.dll'
+		end
+	end
+
+	add_global_attribute :cpp_define, '_SECURE_SCL_DEPRECATE=0'
+
+end
+

@@ -1,0 +1,484 @@
+require(File.dirname(__FILE__) + '/gen_crc.rb')
+require(File.dirname(__FILE__) + '/gen_bin2c.rb')
+
+owner 'jkoenen'
+
+! gen_bin2c.rb
+! gen_crc.rb
+! gen_version.rb
+! gen_hostip.rb
+! common.lace
+
+export do
+	add_cpp_include_dir @project.build_path + 'include'
+
+	if not @options[ :disable_version_compiler ]
+		add_cpp_include_dir @project.build_path + 'generated_sources'
+	end
+end
+
+
+# declares the keen common compilers.
+
+if is_test_build
+	define_compiler(CompilerBase, :input_pattern => tag('.cpp') & tag('UNIT_TEST'), :output_dir => 'include', :output_tag => '.cpp') do
+		def process_files(files, num_jobs)
+			output_name = @output_path + 'unittest_defines.hpp'
+
+			content = ""
+			functions = ""
+			calls = ""
+
+			files.map{ |f| f.path.to_s }.each do |src_name|
+				File.read(src_name).scan(/^\s*KEEN_UNIT_TEST\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*$/) do |unit, test|
+					functions << "\tUnitTest* KEEN_UNITTEST_FUNCTION_NAME(#{unit}, #{test});\n"
+					calls << "\t\tkeen::KEEN_UNITTEST_FUNCTION_NAME(#{unit}, #{test}),\n"
+				end
+				File.read(src_name).scan(/^\s*KEEN_UNIT_TEST_F\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*$/) do |unit, test|
+					functions << "\tUnitTest* KEEN_UNITTEST_FUNCTION_NAME(#{unit}, #{test});\n"
+					calls << "\t\tkeen::KEEN_UNITTEST_FUNCTION_NAME(#{unit}, #{test}),\n"
+				end
+			end
+
+			content << "#ifndef KEEN__UNIT_TEST_DEFINES\n"
+			content << "#define KEEN__UNIT_TEST_DEFINES\n\n\n"
+			content << "#include \"keen/base/unittest.hpp\"\n"
+			content << "namespace keen\n{\n"
+			content << functions
+			content << "\n"
+			content << "\tstatic UnitTest* s_unitTests[] = {\n"
+			content << calls
+			content << "\t};\n"
+			content << "}\n\n"
+			content << "#endif\n"
+
+			unless File.exist?(output_name) && File.read(output_name) == content
+				trace 'Creating unit test definition header %s', output_name
+
+				File.open(output_name, 'w') {|f| f.write content }
+			end
+
+			@project.global_context.add_attribute(:cpp_include_dir, @output_path)
+		end
+
+		def output_files(files)
+			files.map {|f| InputFile.new(f.path, ['.cpp'], f.context) }
+		end
+	end
+end
+
+define_compiler(CompilerBase, :input_pattern => tag('.cpp') & tag('PERFORMANCE_TEST'), :output_dir => 'include', :output_tag => '.cpp') do
+	def process_files(files, num_jobs)
+		output_name = @output_path + 'performancetest_defines.hpp'
+
+		content = "#ifndef KEEN_PERFORMANCE_TEST_DEFINES\n#define KEEN_PERFORMANCE_TEST_DEFINES\n\nusing namespace keen;\n\n"
+		content << "#include \"keen/base/performancetest.hpp\"\n"
+		files.map{ |f| f.path.to_s }.each do |src_name|
+
+			File.read(src_name).scan(/^\s*KEEN_PERFORMANCE_TEST_CYCLES\s*\(\s*(\w+)\s*,\s*(\w+)\s*\,\s*((\w|:)+)\s*\)\s*$/) do |unit, test, value_type|
+				content << "KEEN_PERFORMANCE_TEST_CYCLES_DEFINE(%s, %s, %s)\n" % [ unit, test, value_type ]
+			end
+			File.read(src_name).scan(/^\s*KEEN_PERFORMANCE_TEST_TIME\s*\(\s*(\w+)\s*,\s*(\w+)\s*\,\s*(\w+)\s*\)\s*$/) do |unit, test, value_type|
+				content << "KEEN_PERFORMANCE_TEST_TIME_DEFINE(%s, %s, %s)\n" % [ unit, test, value_type ]
+			end
+			content << "\n"
+		end
+		content << "#endif\n"
+
+		unless File.exist?(output_name) && File.read(output_name) == content
+			trace 'Creating performance test definition header %s', output_name
+
+			File.open(output_name, 'w') {|f| f.write content }
+		end
+
+		@project.global_context.add_attribute(:cpp_include_dir, @output_path)
+	end
+
+	def output_files(files)
+		files.map {|f| InputFile.new(f.path, ['.cpp'], f.context) }
+	end
+end
+
+define_compiler(SingleFileCompiler, :input_pattern => tag('.crc'), :output_name => 'include/%_crc.hpp') do
+	def compile(infile, outfile)
+		if Helpers.newer?(infile.path.to_s, outfile.to_s)
+			trace "Processing %s (%s)", infile.path, infile.context.get_attribute_value(:crc_mixed_case) ? "Mixed Case" : "Lower Case"
+			gen_crc infile.path, outfile, infile.context.get_attribute_value(:crc_mixed_case)
+		end
+	end
+end
+
+define_compiler(SingleFileCompiler, :input_pattern => tag('BIN2C'), :output_name => 'include/%.hpp') do
+	def compile(infile, outfile)
+		if Helpers.newer?(infile.path.to_s, outfile.to_s)
+			trace "Creating Header for %s", infile.path
+			gen_bin2c infile.path, outfile
+		end
+	end
+	def output_name(file = nil)
+		if file && @args[:output_name] !~ /%/
+			raise "Output name '#{@args[:output_name]} needs to contain a '%'. (compiler: #{self.inspect})"
+		end
+		if file
+			@output_path + @args[:output_name].sub(/%/, (file.context.get_attribute_value(:output_prefix) || '') + file.path.basename().to_s.downcase.gsub(/[ .]/, '_'))
+		else
+			@output_path + @args[:output_name]
+		end
+	end
+end
+
+if not @options[ :disable_version_compiler ]
+	define_compiler(CompilerBase, :input_pattern => tag(nil), :output_name => 'generated_sources/version.cpp') do
+		def process_files(files, num_jobs)
+			raise unless files.empty?
+			raise unless @project.build_tags.length >= 2
+
+			filename = output_name
+			gamebuild_dir = @project.global_context.get_attribute_value(:gamebuild_dir)
+
+			build_configuration = (@project.build_tags - [@project.get_target_id.to_s]).join( '_' )
+
+			@project.global_context.add_attribute(:cpp_include_dir, @output_path)
+			sh Helpers::ruby_exe, File.dirname(__FILE__) + '/gen_version.rb', @project.name, @project.path, filename, @project.build_path, gamebuild_dir.to_s, build_configuration, @project.globals.release_version
+		end
+
+		def output_files(files)
+			return [InputFile.new(@output_path + 'version.cpp', ['.cpp'], @project.global_context), InputFile.new(@output_path + 'version.hpp', ['.hpp'], @project.global_context)]
+		end
+	end
+end
+
+if @options[ :enable_host_ip_compiler ]
+	define_compiler(CompilerBase, :input_pattern => tag(nil), :output_name => 'generated_sources/host_ip.cpp') do
+		def process_files(files, num_jobs)
+			raise unless files.empty?
+			raise unless @project.build_tags.length >= 2
+
+			filename = output_name
+
+			@project.global_context.add_attribute(:cpp_include_dir, @output_path)
+			sh Helpers::ruby_exe, File.dirname(__FILE__) + '/gen_hostip.rb', filename
+		end
+
+		def output_files(files)
+			return [InputFile.new(@output_path + 'host_ip.cpp', ['.cpp'], @project.global_context), InputFile.new(@output_path + 'host_ip.hpp', ['.hpp'], @project.global_context)]
+		end
+	end
+end
+
+class UnityCompiler < CompilerBase
+	def initialize(args)
+		super
+		@unity_map = {}
+	end
+
+	def process_files(files, num_jobs)
+		read_unity_map()
+
+		sorted_files = files.sort{ |x,y| x.path.basename <=> y.path.basename }
+		sets(sorted_files).each do |output_name, files|
+			@unity_map[Helpers.make_relative2(output_name.path, @project.path)] = files.map {|file| Helpers.make_relative2(file.path, @project.path)}
+
+			content = files.map do |file|
+				file_path_string = file.path.to_s
+				#file_path_string.gsub!( File::SEPARATOR, File::ALT_SEPARATOR ) if File::ALT_SEPARATOR
+				"#include \"#{file_path_string}\"\n"
+				# :JK: relative paths don't worke because the complete include paths for some files get too long (>260 characters)
+				#relative_filepath = Helpers.make_relative2(file.path, output_name.path.dirname).to_s
+				#relative_filepath.gsub!( File::SEPARATOR, File::ALT_SEPARATOR ) if File::ALT_SEPARATOR
+				#"#include \"#{relative_filepath}\"\n"
+			end.join
+
+			unless File.exist?(output_name) && File.read(output_name) == content
+				trace 'Creating unity build source %s', output_name
+				File.open(output_name, 'w') {|f| f.write content }
+			end
+		end
+	end
+
+	def output_files(files)
+		sets(files).map {|output_name, files| InputFile.new(output_name, ['.cpp'], files.first.context) }
+	end
+
+	def sets(files)
+		sort_sets = Hash.new {|k, v| k[v] = [] }
+		files.each do |file|
+			sort_sets[file.context.get_attribute_value(:unity_set) || 'default'] << file
+		end
+		sets = {}
+		sort_sets.each do |name, files|
+			extension = files.first.tags.include?('.cxx') ? '.cxx' : '.cpp'
+			sets[@output_path + (name + '_unity' + extension)] = files
+
+			context = files.first.context
+			files.each do |file|
+				if file.context != context
+					trace "Error: Files from different contexts in the same unity set #{name}:\n#{files.first.path}\nvs.\n#{file.path}"
+
+					p file.context
+					p context
+					raise AbortBuild
+				end
+			end
+		end
+		return sets
+	end
+
+	def finish_build()
+		require 'json'
+		out_path = Pathname.new(@project.build_path) + "misc"
+		Dir.mkdir out_path unless File.exist?(out_path)
+		File.open(out_path + "unity_map.json", 'w') {|f| f.write @unity_map.to_json}
+	end
+
+	def read_unity_map()
+		if @unity_map.empty?
+			out_dir = Pathname.new(@project.build_path) + "misc"
+			@unity_map_path = out_dir + "unity_map.json"
+			Dir.mkdir out_dir unless File.exist?(out_dir)
+			if File.exist?(@unity_map_path)
+				require 'json'
+				File.open(@unity_map_path, 'r') do |f|
+					@unity_map = JSON.parse(f.read)
+				end
+			else
+				@unity_map = {}
+			end
+		end
+	end
+end
+
+if !@project.globals.disable_unity_build
+
+	define_compiler(UnityCompiler, :input_pattern => (tag('.cpp') | tag('.c')) & tag('UNITY') & TagNot.new(tag('UNIT_TEST') | tag('PERFORMANCE_TEST') | tag('EXCLUDE_FROM_UNITY')), :output_dir => 'unity_sources', :output_tag => '.cpp') do
+	end
+
+	define_compiler(UnityCompiler, :input_pattern => tag('.cxx') & tag('UNITY') & TagNot.new(tag('UNIT_TEST') | tag('PERFORMANCE_TEST') | tag('EXCLUDE_FROM_UNITY')), :output_dir => 'unity_sources', :output_tag => '.cxx') do
+	end
+
+end
+
+define_compiler(SingleFileCompiler, :input_pattern => tag('COPY_EXE'), :output_name => '%.exe') do
+	def compile(infile, outfile)
+		if Helpers.newer?(infile.path.to_s, outfile.to_s)
+			trace "Copy exe %s to %s", infile.path, outfile.to_s
+			FileUtils.cp(infile.path.to_s, outfile.to_s)
+		end
+	end
+end
+
+define_compiler(CompilerBase, :input_pattern => tag('COPY_BINARY') ) do
+	def process_files(files, num_jobs)
+
+		times = {}
+
+		times_file = Pathname.new( @project.build_path ) + "copy_binary_times.txt"
+		if File.exist?( times_file )
+			File.open( times_file, 'r' ).each do |line|
+				timeName = line.strip.split( '|' )
+				next if timeName.size != 2
+				times[ timeName[ 1 ] ] = timeName[ 0 ].to_i
+			end
+		end
+
+		file_mappings( files ).each do |source_file,target_dir|
+
+			filename 	= source_file.path.basename.to_s
+			source_time = Helpers.mtime( source_file ).to_i
+
+			#puts "#{filename} old:#{times[filename]} new:#{source_time}"
+
+			if !Helpers.exist?( target_dir ) || ( ( times[ filename ] != source_time ) && ( source_file.path != target_dir ) )		# != hackfix for build dlls
+				#puts "#{filename} old:#{times[filename]} new:#{source_time}"
+				FileUtils.mkpath(File.dirname(target_dir))
+				trace "Copy binary %s to %s", source_file.path, Helpers.make_relative( target_dir ).to_s
+				FileUtils.cp(source_file.path.to_s, target_dir.to_s)
+			end
+
+			times[ filename ] = source_time.to_i
+		end
+
+		File.open( times_file, 'w' ) do |file|
+			times.each_pair{|filename,time| file.write( "#{time}|#{filename}\n" ) }
+		end
+	end
+
+	def output_files(files)
+		file_mappings( files ).map {|source_file, target_dir| InputFile.new(target_dir, [], files.first.context) }
+	end
+
+	def file_mappings( files )
+		result = {}
+
+		files.each do |file|
+			result[ file ] = @output_path + ( file.context.get_attribute_value(:copy_binary_target_dir) || '' ) + file.path.basename
+		end
+		return result
+	end
+end
+
+define_compiler(CompilerBase, :input_pattern => tag('COPY_DIRECTORY')) do
+	def process_files(files, num_jobs)
+
+		file_mappings( files ).each do |source_file,target_dir|
+			if Helpers.newer?(source_file.path.to_s, target_dir)
+				FileUtils.mkpath(File.dirname(target_dir))
+				trace "Copy directory %s to %s", source_file.path, target_dir.to_s
+				FileUtils.cp_r(source_file.path.to_s, target_dir.to_s)
+			end
+		end
+	end
+
+	def output_files(files)
+		file_mappings( files ).map {|source_file, target_dir| InputFile.new(target_dir, [], files.first.context) }
+	end
+
+	def file_mappings( files )
+		result = {}
+
+		files.each do |file|
+			result[ file ] = @output_path + ( file.context.get_attribute_value(:copy_binary_target_dir) || '' ) + file.path.basename
+		end
+		return result
+	end
+end
+
+if @options[ :create_converter_registry ]
+	define_compiler(SingleFileCompiler, :input_pattern => tag('.cid'), :output_name => '%.cid', :output_tags => ['.cid', '.hpp'] ) do
+		def compile(infile, outfile)
+			if Helpers.newer?(infile.path.to_s, outfile.to_s)
+				trace "Copy Converter Interface Definition %s to %s", infile.path, outfile.to_s
+				FileUtils.cp(infile.path.to_s, outfile.to_s)
+			end
+		end
+
+		def process_files(files, num_jobs)
+			return if files.empty?
+
+			# first: run the normal process:
+			super files, num_jobs
+
+			# and now create the registry:
+			output_name = @output_path + registry_file_name
+
+			converter_names = files.map { |f| f.path.basename( '.*' ).to_s }
+
+			content = "#ifndef KEEN__PROJECT_CONVERTER_REGISTRY_HPP_INCLUDED\n#define KEEN__PROJECT_CONVERTER_REGISTRY_HPP_INCLUDED\n\n"
+			content << "#include \"keen/converterbase/converter_registry.hpp\"\n"
+
+			content << "\nnamespace keen\n{\n"
+
+			converter_names.each do |converter_name|
+				content << "\tConverterBase*	create_#{converter_name}();\n"
+			end
+
+			content << "\n"
+			content << "\tstatic const ConverterRegistryEntry s_converterRegistryEntries[] = \n"
+			content << "\t{\n"
+
+			converter_names.each do |converter_name|
+				content << "\t\t{ \"#{converter_name}\", create_#{converter_name} },\n"
+			end
+
+			content << "\t};\n"
+
+			content << "\tstatic const ConverterRegistry s_converterRegistry = \n"
+			content << "\t{\n"
+			content << "\t\ts_converterRegistryEntries, \n"
+			content << "\t\tKEEN_COUNTOF( s_converterRegistryEntries )\n"
+			content << "\t};\n"
+			content << "};\n"
+			content << "\n"
+			content << "#endif\n"
+
+			unless File.exist?(output_name) && File.read(output_name) == content
+				trace 'Creating converter registry header %s', output_name
+				File.open(output_name, 'w') {|f| f.write content }
+			end
+
+		end
+
+		def registry_file_name
+			return 'include/generated_converter_registry.hpp'
+		end
+
+		def output_files(files)
+			registry_files = [InputFile.new(@output_path + registry_file_name, ['.hpp'], @project.global_context)]
+			files.map {|f| InputFile.new(output_name(f), @output_tags, f.context) } + registry_files
+		end
+	end
+end
+
+if @options[ :create_license_file ]
+	define_compiler(CompilerBase, :input_pattern => tag(nil), :output_name => 'third_party_licenses.txt') do
+		def process_files(files, num_jobs)
+			# get list of all used third party licenses:
+			module_licenses = @project.get_module_licenses
+
+			# sort by license:
+			license_to_module = {}
+			module_licenses.each { |m,ml|
+				ml.each { |l|
+					if license_to_module.has_key? l
+						license_to_module[l] << m.module_name
+					else
+						license_to_module[l] = [m.module_name]
+					end
+				}
+			}
+
+			actions = {}
+			license_to_module.each {|l,mods|
+				license = @project.get_license_type(l)
+				license.actions.each {|a|
+					if actions.has_key? a
+						actions[a] << l
+					else
+						actions[a] = [l]
+					end
+				}
+			}
+			content = "3rd party licenses:\n"
+			content << "====================\n"
+			content << "\n"
+			content << "Required Actions:\n"
+			content << "-----------------\n"
+
+			actions.each {|a,l|
+				action = @project.get_license_action( a )
+				content << "- #{action.text}:\n"
+
+				if action.flags.include? :global_action
+					license_text = l.map {|x| @project.get_license_type(x).name }.join( ", " )
+					content << "\t- triggered by license(s): #{license_text}\n"
+				else
+					l.each {|x|
+						lic = @project.get_license_type(x)
+						content << "\t- #{lic.name}: #{lic.url}\n"
+					}
+
+				end
+			}
+
+			content << "\n"
+			content << "Module License List:\n"
+			content << "--------------------\n"
+
+			license_to_module.each {|l,mods|
+				lic = @project.get_license_type(l)
+
+				module_list = mods.map{|m| "'#{m}'"}.uniq.join(", ").to_s
+				content << "#{lic.name}: #{module_list}\n"
+			}
+
+			unless File.exist?(output_name) && File.read(output_name) == content
+				trace 'Creating 3rd party license file %s', output_name
+				File.open(output_name, 'w') {|f| f.write content }
+			end
+		end
+
+		def output_files(files)
+			return [InputFile.new(@output_path + 'third_party_licenses.txt', [], @project.global_context)]
+		end
+	end
+end

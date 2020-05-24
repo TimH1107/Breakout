@@ -1,0 +1,18 @@
+third_party_blob( "core", "platform/windows/mssdk-7.00", "d7871ca8ecff3ee94d72c34b7b6e3bce93d290a7", nil ) do
+
+	export do
+		add_attribute :msvc_disabled_warnings, 4668 # 'symbol' is not defined as a preprocessor macro, replacing with '0' for 'directives'
+		add_attribute :msvc_disabled_warnings, 4917 # '' : a GUID can only be associated with a class, interface or namespace
+		enable_msvc_cpp_extensions
+		add_path :low_prio_cpp_include_dir, 'Include'	
+		add_global_path :resource_include_dirs, 'Include'	
+	end
+
+	if is_64bit_target
+		add_global_path :low_prio_lib_dir, 'Lib/x64'
+	else
+		add_global_path :low_prio_lib_dir, 'Lib'
+	end
+
+	add_platform_header 'Include/**/*.h'
+end

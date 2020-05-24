@@ -1,0 +1,185 @@
+#!/usr/bin/env ruby
+
+lib_dir = File.dirname(__FILE__) + '/../lib'
+$: << lib_dir if File.directory?(lib_dir + '/lace')
+
+require 'lace/projectwriterbase'
+require 'optparse'
+require 'json'
+
+module Lace
+	class VsCodeProjectFileWriter < ProjectFileWriterBase
+
+        def create_cmd( cmd )
+            if get_host_platform == :win32
+                return cmd
+            else
+                return cmd.join( ' ' )
+            end
+        end
+
+        def write_json_file( filename, content )            
+            puts "Writing file #{filename}"
+            open_file(filename) { |file| file.write( JSON.pretty_generate( content ) ) }
+        end    
+
+        def write(workspace_filename)
+            
+            build_directory = Pathname.new( workspace_filename ).dirname
+            tasks_filename =  build_directory + ".vscode/tasks.json"
+            launch_filename =  build_directory + ".vscode/launch.json"
+
+            project_name = @project.name
+            
+            host_platform = get_host_platform().to_s
+
+            import_paths = @project.import_paths.map { |ip| ip = ip.expand_path.to_s }.sort_by { |x| x.length }
+            module_paths = []
+            import_paths.each { |ip|
+                if module_paths.find{ |p| ip.index( p ) } == nil
+                    module_paths << ip
+                end
+            }
+
+            # filter out all third party folders for now:            
+            #folders = module_paths.select { |p| p.index( "third_party" ) == nil }
+            folders = module_paths
+
+            # we have to add the build folder to make vscode find the .vscode directory in there..
+            folders << build_directory
+
+            lace_cmd = get_lace_bin().expand_path.to_s
+
+            build_tasks = []
+            debug_configs = []
+
+            @builds.each { |build|
+
+                variants = []
+                variants << {"name" => "Rebuild","cmd" => create_cmd( [ "ruby", "#{lace_cmd}", "-r", "-b", "#{build}", "#{@project.path}/project.lace" ] ) }
+
+                underscore = build.index("_")
+                postfix = if underscore then build[0, underscore] else build end
+                build_tag = build.gsub(/\//, '|')
+                build_group = build_tag.end_with?( 'debug' ) ? 
+                    {
+                    	"kind": "build",
+                    	"isDefault": true
+                	}
+                	:
+                	"build"
+
+                build_tasks <<
+                {
+                    "label": "Lace #{build_tag}",
+                    "type": "shell",
+                    "command": "ruby",
+                    "args": [ "#{lace_cmd}", "-b", "#{build}", "#{@project.path}/project.lace" ],
+                    "group": build_group,
+                    "presentation": {                            
+                        "reveal": "silent"      # Reveal the output only if unrecognized errors occur.
+                    },
+                    "problemMatcher": [
+                        "$msCompile",
+                        {
+                        "owner": "cpp",
+                        "fileLocation": [ "absolute" ],
+                        "pattern": {
+                            "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error|fatal error):\\s+(.*)$",
+                            "file": 1,
+                            "line": 2,
+                            "column": 3,
+                            "severity": 4,
+                            "message": 5
+                        }      
+                      }
+                    ]
+                }
+
+                if build.include? host_platform
+                    exe_path = get_build_executable_path( build )
+
+                    debug_exe_path = exe_path
+                    debug_configs << 
+                    {
+                        "type": "lldb",     # :JK: :TODO: support msvc/windbg?
+                        "request": "launch",
+                        "name": "Run lldb #{build_tag}",
+                        "program": "#{exe_path}",
+                        "args": [],
+                        "cwd": "${workspaceRoot}"
+                    }
+                    debug_configs << 
+                    {
+                        "type": "cppdbg",
+                        "request": "launch",
+                        "name": "Run gdb #{build_tag}",
+                        "program": "#{exe_path}",
+                        "args": [],
+                        "cwd": "${workspaceRoot}",
+                        "miDebuggerPath": "/usr/bin/gdb",   # windows?
+                        "setupCommands": [
+                            {
+                                "description": "Enable pretty-printing for gdb",
+                                "text": "-enable-pretty-printing",
+                                "ignoreFailures": true
+                            }
+                        ]
+                    }
+               end
+            }
+
+            settings = {}
+
+            #include_patterns = ["*.cpp", "*.hpp", "*.inl", "*.c", "*.h", "*.bdef", "*.ds", "*.lace", "*.crc", "*.mm", "*.java"]
+            exclude_patterns = ["*.exe", "*.dll", "*.obj", "*.o", "*.a", "*.lib", "*.jar", "*.zip" ]
+
+            workspace_content = {
+                "folders" => folders.map { |f| { "path" => f } },
+                "settings" => settings
+                #"build_systems" => build_systems
+            }
+
+            tasks_content = {
+                "version" => "2.0.0",
+                "tasks" => build_tasks                        
+            }           
+
+            launch_content = {
+                "version": "0.2.0",
+                "configurations": debug_configs
+            }
+        
+            write_json_file( workspace_filename, workspace_content )
+            write_json_file( tasks_filename, tasks_content )
+            write_json_file( launch_filename, launch_content )
+        end
+	end
+end
+
+project_file = 'project.lace'
+workspace_file = nil
+build_path = nil
+gdb_params = nil
+
+OptionParser.new do |opts|
+	opts.banner = "Usage: lace-vscode.rb [OPTIONS] [BUILDS]"
+	opts.on("-p", "--project PROJECT_FILE", "The project file to read (default: project.lace)") do |fname|
+		project_file = fname
+	end
+	opts.on("-o", "--output workspace-name", "The filename of the resulting .code-workspace file (default: build/<project_name>.code-workspace)") do |fname|
+		workspace_file = fname
+	end
+	opts.on("-b", "--build-path PATH", "Base build dir") do |path|
+		build_path = path
+	end
+end.parse!
+
+writer = Lace::VsCodeProjectFileWriter.new(project_file, ARGV,build_path)
+if not writer.project
+	puts "Could not load project"
+	exit 1
+end
+writer.build_path = build_path || writer.project.path + "build"
+target_name = workspace_file ? workspace_file : "#{writer.build_path}/#{writer.project.name}.code-workspace"
+writer.write(target_name)

@@ -1,0 +1,33 @@
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+inject local_dir + 'defbuild_configuration_keen.lace'
+add_file local_dir + 'lace_config_tool.lace', ''
+
+module_search_path local_dir + '../modules'
+
+@tool_target_platforms = []
+@tool_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+@tool_target_platforms += [ "linux_x64" ] if can_build_platform( :linux )
+@tool_target_platforms += [ "osx_x64" ] if can_build_platform( :osx )
+
+@tool_configurations = @tool_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+export do
+	@project.globals.unity_build = true
+
+	module_options 'runtime/base', :enable_crt_allocator => true
+	module_options 'runtime/base', :enable_memory_tracker => is_debug_build ? true : false
+
+	module_options 'runtime/debugui', :enable_ui => false
+
+	import 'compiler/common'
+	import 'compiler/dataschema'
+	import 'runtime/base'
+
+	import "platform/#{@project.get_target_platform}"
+
+	case get_target_platform
+	when :win32
+		@project.globals.win32_subsystem = 'WINDOWS'
+	end
+end

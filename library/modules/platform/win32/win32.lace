@@ -1,0 +1,71 @@
+if get_host_platform() != :win32
+	raise AbortBuild, "Unsupported target platform for win32 in win32.lace"
+end
+
+win32_compiler = get_module_option_value( :win32_compiler, :msvc )
+
+if win32_compiler == :msvc
+	msvc_version = get_module_option_value( :msvc_version, 19 )
+
+	if msvc_version == 16
+		#puts "Using msvc16004021901"
+
+		module_alias 'platform/win32/compiler', 		'platform/windows/msvc-16004021901.lace'
+		module_alias 'platform/win32/mssdk', 			'platform/windows/mssdk-7.00.lace'
+		module_alias 'platform/win32/atlmfc', 			'platform/windows/atlmfc-9.00.30729.lace'
+		module_alias 'platform/fxc', 					'platform/windows/dxsdk-june10-fxc.lace'
+		module_alias 'platform/win32/adpcm', 			'platform/windows/dxsdk-june10-adpcm.lace'
+		module_alias 'platform/win32/d3dcompiler',		'platform/windows/dxsdk-june10-d3dcompiler.lace'
+		module_alias 'platform/win32/resourcecompiler', 'platform/windows/WindowsKit-resourcecompiler.lace'
+
+	elsif msvc_version == 18
+		#puts "Using msvc180030723"
+
+		module_alias 'platform/win32/compiler', 		'platform/windows/msvc-180031101.lace'
+		module_alias 'platform/win32/mssdk', 			'platform/windows/WindowsKit-8.1.lace'
+		module_alias 'platform/fxc', 					'platform/windows/WindowsKit-8.1-fxc.lace'
+		module_alias 'platform/win32/adpcm', 			'platform/windows/WindowsKit-adpcm.lace'
+		module_alias 'platform/windows/xinput', 		'platform/windows/WindowsKit-included.lace'
+		module_alias 'platform/windows/xaudio27', 		'platform/windows/dxsdk-june10-xaudio2.lace'
+		module_alias 'platform/windows/xaudio28', 		'platform/windows/WindowsKit-included.lace'
+		module_alias 'platform/win32/d3dcompiler', 		'platform/windows/WindowsKit-d3dcompiler.lace'
+		module_alias 'platform/win32/resourcecompiler', 'platform/windows/WindowsKit-resourcecompiler.lace'
+
+	elsif msvc_version == 19
+		#puts "Using msvc190023506"
+
+		#module_alias 'platform/win32/compiler', 		'platform/win32/msvc-19.00.24215.1-win32.lace'
+		module_alias 'platform/win32/compiler', 		'platform/win32/msvc-19.14.26429.4-win32.lace'
+		module_alias 'platform/win32/mssdk', 			'platform/windows/WindowsKit-10.0.15063.0.lace'
+		module_alias 'platform/windows/xinput', 		'platform/windows/WindowsKit-included.lace'
+		module_alias 'platform/windows/xaudio27', 		'platform/windows/dxsdk-june10-xaudio2.lace'
+		module_alias 'platform/windows/xaudio28', 		'platform/windows/WindowsKit-included.lace'
+		module_alias 'platform/win32/d3dcompiler', 		'platform/windows/WindowsKit-d3dcompiler.lace'
+		module_alias 'platform/win32/adpcm', 			'platform/windows/WindowsKit-adpcm.lace'
+		module_alias 'platform/win32/resourcecompiler', 'platform/windows/WindowsKit-resourcecompiler.lace'
+
+	else
+		raise "Unsupported msvc version: #{msvc_version}"
+	end
+elsif win32_compiler == :clang
+		module_alias 'platform/win32/compiler', 		'platform/win32/win32-clang.lace'
+		module_alias 'platform/win32/mssdk', 			'platform/windows/WindowsKit-10.0.15063.0.lace'
+		module_alias 'platform/windows/xinput', 		'platform/windows/WindowsKit-included.lace'
+		module_alias 'platform/windows/xaudio2', 		'platform/windows/dxsdk-june10-xaudio2.lace'
+		module_alias 'platform/win32/d3dcompiler', 		'platform/windows/WindowsKit-d3dcompiler.lace'
+		module_alias 'platform/win32/adpcm', 			'platform/windows/WindowsKit-adpcm.lace'
+		module_alias 'platform/win32/resourcecompiler', 'platform/windows/WindowsKit-resourcecompiler.lace'
+else
+	raise "Unsupported compiler: #{win32_compiler}"
+end
+
+section 'main' do
+	export do
+		import 'platform/win32/compiler'
+	end
+
+	@project.globals.win32_compiler = win32_compiler
+	if win32_compiler == :msvc
+		@project.globals.msvc_version = msvc_version
+	end
+end

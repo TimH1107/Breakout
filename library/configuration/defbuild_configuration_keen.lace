@@ -1,0 +1,1036 @@
+# declare keen specific helper functions for global usage.
+
+local_dir = File.expand_path(File.dirname(__FILE__)) + '/'
+
+add_file local_dir + 'defbuild_configuration_keen.lace', ''
+
+@project.globals.use_crt = true
+@project.globals.use_batch_builds = false
+@project.globals.remote_build_target_platforms = []
+@project.globals.allow_alternative_configurations = false
+@project.globals.enable_steam = false
+@project.globals.enable_dos = false
+@project.globals.enable_google_play = false
+
+inject local_dir + "build_info.rb"
+
+set_global_attribute :clang_warning_level, 2
+
+@project.globals.library_platforms = File.open( local_dir + "library_platforms.txt" ) { |f| f.readline.split( "," ) }.map {|c| c.strip.to_sym }
+if ENV[ "LACE_LIBRARY_PLATFORMS" ]
+	my_platforms = ENV[ "LACE_LIBRARY_PLATFORMS" ].split( "," ).map{|c| c.strip.to_sym }
+	@project.globals.library_platforms = @project.globals.library_platforms.delete_if{|p| !my_platforms.include?( p ) }
+end
+# puts "@project.globals.library_platforms=#{@project.globals.library_platforms}"
+
+# get target platform from build tags:
+if not @project.build_tags.empty?
+	target_build_info = $buildInfos[ @project.build_tags[ 0 ] ]
+	if !target_build_info
+		raise "Unsupported platform #{@project.build_tags[ 0 ]} has to be one of #{$buildInfos.keys.join(',')}"
+	end
+	@project.globals.target_build_info = target_build_info
+else
+	@project.globals.target_build_info = BuildInfo.new( nil, nil, nil, nil, 0 )
+end
+
+# get host platfrom from ruby:
+if (/cygwin|mswin|mingw|bccwin|wince|emx/ =~ RUBY_PLATFORM) != nil
+	@project.globals.host_platform_info = $buildInfos[ "win32_x64" ]
+
+	# :JK: don't include the cpu extension here..
+	@project.globals.supported_local_targets = [ :win32_x64, :win32_x86, :android_arm32, :android_arm64, :uwp_x86, :uwp_x64, :uwp_arm32, :ps4, :xb1, :nx, :nx_win32 ]
+	@project.globals.supported_remote_targets = [ :osx_x64, :ios_arm32, :ios_arm64, :linux_x64, :linux_x86 ]
+
+	# todo: later add osx (via ssh)
+elsif (/darwin/ =~ RUBY_PLATFORM) != nil
+
+	@project.globals.host_platform_info = $buildInfos[ "osx_x64" ]
+
+	#@project.globals.supported_local_targets = [ :osx_x64, :ios_arm32, :ios_arm64, :android_arm64 ]
+	@project.globals.supported_local_targets = [ :osx_x64, :ios_arm32, :ios_arm64 ]
+	@project.globals.supported_remote_targets = []
+else
+	# :TODO: better linux platform detection..
+	if RUBY_PLATFORM.start_with? 'i386'
+		@project.globals.host_platform_info = $buildInfos[ "linux_x86" ]
+
+		@project.globals.supported_local_targets = [ :linux_x86, :android_arm32, :android_arm64 ]
+	else
+		@project.globals.host_platform_info = $buildInfos[ "linux_x64" ]
+
+		@project.globals.supported_local_targets = [ :linux_x64, :android_arm32, :android_arm64 ]
+	end
+
+	@project.globals.supported_remote_targets = []
+end
+
+if PLATFORM_WIN32 && Helpers.has_wsl
+	@project.globals.supported_wsl_targets = [ :linux_x64, :android_arm32, :android_arm64 ]
+else
+	@project.globals.supported_wsl_targets = []
+end
+
+@project.globals.local_build_target_platforms = @project.globals.supported_local_targets.map{|lt| $buildInfos[ lt.to_s ].platform }.uniq
+@project.globals.remote_build_target_platforms = @project.globals.supported_remote_targets.map{|lt| $buildInfos[ lt.to_s ].platform }.uniq
+@project.globals.wsl_build_target_platforms = @project.globals.supported_wsl_targets.map{|lt| $buildInfos[ lt.to_s ].platform }.uniq
+
+@project.globals.supported_target_platforms = @project.globals.local_build_target_platforms + @project.globals.remote_build_target_platforms + @project.globals.wsl_build_target_platforms
+
+#p "host_platform='#{@project.globals.host_platform_info.platform}' supported_local_targets=#{@project.globals.supported_local_targets}"
+
+bin_dir = Pathname.new( local_dir ) + "../bin/#{@project.globals.host_platform_info.id}/"
+@project.globals.bin_dir = bin_dir
+@project.globals.cdep_path = bin_dir + 'cdep.exe'
+
+#puts "@project.globals.cdep_path=#{@project.globals.cdep_path}"
+
+if !$defbuild1_configuration_keen
+	$defbuild1_configuration_keen = true
+	$ignore_platform_headers = ENV[ "LACE_IGNORE_PLATFORM_HEADERS" ]
+
+	class MemoryBlock
+		attr_reader :name, :type, :alignment, :flags
+
+		def initialize(name, type, opts )
+			@name = name
+			@type = type
+			@alignment = opts[:alignment] || 128
+			@flags = opts[:flags] || []
+		end
+
+		def to_s
+			@name
+		end
+	end
+
+	class ResourceAllocator
+		attr_reader :suffix, :memory_type
+
+		def initialize( suffix, memory_type )
+			@suffix = suffix
+			@memory_type = memory_type
+		end
+
+		def to_s
+			@suffix
+		end
+	end
+
+	class ResourceConfiguration
+		attr_reader :name
+
+		def initialize( name )
+			@name = name
+		end
+
+		def to_s
+			@name
+		end
+	end
+
+	class ResourceContext
+		attr_reader :name, :configuration, :parent, :slot_count, :allocator_type
+
+		def initialize( name, configuration, parent, opts )
+			@name = name
+			@configuration = configuration
+			@parent = parent
+			@is_dynamic = opts[:is_dynamic] || false
+			@slot_count = opts[:slot_count] || 1
+			@allocator_type = opts[:allocator_type] || :fixed_zone
+		end
+
+		def is_dynamic?
+			return @is_dynamic
+		end
+
+		def is_global?
+			return @configuration == nil
+		end
+
+		def to_s
+			@name
+		end
+	end
+
+	CompilerBase.class_eval do
+		def collect_cpp_defines(context)
+			defines = context.get_attribute_set(:cpp_define).to_a
+			module_owner = context.get_attribute_value(:module_owner) || "nobody"
+			module_name = context.get_attribute_value(:module_name) || @project.name
+			defines << "KEEN_MODULE_OWNER=#{module_owner}"
+			defines << "KEEN_MODULE_NAME=#{module_name}"
+			return defines
+		end
+	end
+
+	Project.class_eval do
+
+		def set_target_configuration( config )
+			if @globals.target_configuration != nil
+				raise "only one call to set_target_configuration allowed"
+			end
+			if config != :static_library && config != :dynamic_libary
+				raise "Invalid target configuration #{config}"
+			end
+
+			@globals.target_configuration = config
+			@globals.target_extension = @globals.target_build_info.static_library_extension
+		end
+
+		def get_target_build_info()
+			return @globals.target_build_info
+		end
+
+		def get_target_id()
+			return @globals.target_build_info.id
+		end
+
+		def get_target_platform()
+			return @globals.target_build_info.platform
+		end
+
+		def get_target_cpu()
+			return @globals.target_build_info.cpu
+		end
+
+		def get_target_endianness()
+			return @globals.target_build_info.endianness
+		end
+
+		def get_target_pointer_size()
+			return @globals.target_build_info.pointer_size
+		end
+
+		def is_64bit_target()
+			return @globals.target_build_info.pointer_size == 8
+		end
+
+		def get_target_executable_extension()
+			return @globals.target_build_info.executable_extension
+		end
+
+		def get_host_id()
+			return @globals.host_platform_info.id
+		end
+
+		def get_host_platform()
+			return @globals.host_platform_info.platform
+		end
+
+		def get_host_executable_extension()
+			return @globals.host_platform_info.executable_extension
+		end
+
+		def is_64bit_host()
+			return @globals.host_platform_info.pointer_size == 8
+		end
+
+		def is_debug_build()
+			return @build_tags.include?( 'debug' )
+		end
+
+		def is_release_build()
+			return @build_tags.include?( 'release' )
+		end
+
+		def is_master_build()
+			return @build_tags.include?( 'master' )
+		end
+
+		def is_qa_build()
+			return @build_tags.include?( 'qa' )
+		end
+
+		def is_test_build()
+			return @globals.include_unit_tests
+		end
+
+		def get_build_config()
+			if is_debug_build()
+				return "debug"
+			elsif is_release_build()
+				return "release"
+			elsif is_qa_build()
+				return "qa"
+			elsif is_master_build()
+				return "master"
+			else
+				raise "Unknown build configuration"
+			end
+		end
+
+		def is_debug_code_enabled()
+			return is_test_build() || is_debug_build()
+		end
+	end
+
+	LaceModule.class_eval do
+		alias_method :old_run_section, :run_section
+		alias_method :old_owner, :owner
+
+		def run_section( section )
+			old_run_section( section )
+			if @module_name
+				unity_build_module( @module_name.gsub( /\//, '_' ), @module_name )
+			end
+		end
+
+		def owner(name)
+			old_owner( name )
+
+			set_attribute :module_owner, name
+		end
+
+		def project_name(name)
+			@project.name = name
+			unity_build_module( name )
+		end
+
+		def get_exe_path(base_name)
+			return @project.globals.bin_dir + ( base_name + @project.get_host_executable_extension )
+		end
+
+		def project(name,build_targets,target_platforms=nil,unity_build=true)
+			@project.name = name
+			if unity_build
+				unity_build_module( name )
+			end
+
+			if @project.build_tags.empty?
+				supported_targets = @project.globals.supported_local_targets
+
+				# :JK: :TODO: better solution??
+				if !@project.globals.skip_remote_build_targets && ENV[ 'LACE_REMOTE_BUILDS' ]
+					supported_targets = supported_targets + @project.globals.supported_remote_targets
+				end
+				#puts "supported_targets=#{supported_targets}"
+
+				filtered_build_targets = build_targets.select{|bt| supported_targets.include?( bt.split( '/' )[ 0 ].to_sym ) }
+
+				puts "build_tags=" + filtered_build_targets.to_s
+				exit 0
+			else
+				# check that the current build tag is allowed..
+				if not @project.globals.allow_alternative_configurations
+					current_build_tag = @project.build_tags.join('/')
+					if not build_targets.index( current_build_tag )
+						if @project.globals.skip_invalid_targets
+							exit 0
+						else
+							puts "Build Target '#{current_build_tag}' not found in list of supported project build targets (targets=#{build_targets.join(',')})!"
+							exit 1
+						end
+					end
+				end
+
+				# check how this can build:
+				@project.can_build_local = @project.globals.local_build_target_platforms.include?( @project.get_target_platform )
+				@project.can_build_wsl = @project.globals.wsl_build_target_platforms.include?( @project.get_target_platform )
+				@project.can_build_remote = @project.globals.remote_build_target_platforms.include?( @project.get_target_platform )
+			end
+			add_file 'project.lace', 'EXCLUDE', :ignore_missing=>true
+		end
+
+		def get_target_build_info()
+			return @project.get_target_build_info()
+		end
+
+		def get_target_id()
+			return @project.get_target_id()
+		end
+
+		def get_target_platform()
+			return @project.get_target_platform()
+		end
+
+		def get_target_cpu()
+			return @project.get_target_cpu()
+		end
+
+		def get_target_endianness()
+			return @project.get_target_endianness()
+		end
+
+		def get_target_pointer_size()
+			return @project.get_target_pointer_size()
+		end
+
+		def is_64bit_target()
+			return @project.is_64bit_target()
+		end
+
+		def is_tool_platform()
+			return [ :win32, :linux, :osx ].include?( get_target_platform )
+		end
+
+		def is_target_platform( allowed_platforms )
+			return allowed_platforms.include? get_target_platform
+		end
+
+		def get_host_id()
+			return @project.get_host_id()
+		end
+
+		def get_host_platform()
+			return @project.get_host_platform()
+		end
+
+		def is_64bit_host()
+			return @project.is_64bit_host()
+		end
+
+		def is_target_platform_supported( platform )
+			return @project.globals.library_platforms.include?( platform )
+		end
+
+		def can_build_platform( platform )
+
+			# we can't build everything on every host platform:
+			if not @project.globals.supported_target_platforms.include?( platform )
+				#supported_platforms = @project.globals.supported_target_platforms.map{|p| "'#{p}'" }.join(',')
+				#puts "platform '#{platform}' is not supported! - Supported platforms: #{supported_platforms}"
+				return false
+			end
+
+			if not is_target_platform_supported( platform )
+				#supported_platforms = @project.globals.library_platforms.map{|p| "'#{p}'" }.join(',')
+				#puts "platform '#{platform}' is not supported! - Supported platforms: #{supported_platforms}"
+				return false
+			end
+
+			return true
+		end
+
+		def set_gamebuild_platform(platform)
+			#puts 'setting gamebuild platform to ' + platform
+			set_global_attribute :gamebuild_platform, platform
+			update_gamebuild_dir()
+		end
+
+		def get_gamebuild_platform()
+			@project.global_context.get_attribute_value( :gamebuild_platform ) || ""
+		end
+
+		def set_gamebuild_dir(path)
+			# append the platform and sku:
+			set_global_attribute :gamebuild_base_dir, path
+			update_gamebuild_dir()
+		end
+
+		def get_gamebuild_base_dir()
+			@project.global_context.get_attribute_value( :gamebuild_base_dir ) || ""
+		end
+
+		def update_gamebuild_dir()
+			complete_gb_path = get_gamebuild_base_dir() + "/" + get_gamebuild_platform()
+			set_global_path :gamebuild_dir, complete_gb_path
+		end
+
+		def set_msvc_build_options(link_type, threading_type)
+			@project.globals.msvc_link_type = link_type
+			@project.globals.msvc_threading_type = threading_type
+		end
+
+		def set_msvc_target(target)
+			@project.globals.win32_target = target
+		end
+
+		def is_debug_build()
+			return @build_tags.include?( 'debug' )
+		end
+
+		def is_release_build()
+			return @build_tags.include?( 'release' )
+		end
+
+		def is_master_build()
+			return @build_tags.include?( 'master' )
+		end
+
+		def is_test_build()
+			return @project.globals.include_unit_tests
+		end
+
+		def get_module_option_value( module_option_name, default )
+			return @options[ module_option_name ] == nil ? default : @options[ module_option_name ]
+		end
+
+		def set_cpp_define_feature( cpp_define, enabled )
+			if enabled
+				add_cpp_define "#{cpp_define}=2-"
+			else
+				add_cpp_define "#{cpp_define}=1-"
+			end
+		end
+
+		def set_global_cpp_define_feature( cpp_define, enabled )
+			if enabled
+				add_global_cpp_define "#{cpp_define}=2-"
+			else
+				add_global_cpp_define "#{cpp_define}=1-"
+			end
+		end
+
+		def set_msvc_target_extension(extension)
+			@project.globals.target_extension = extension
+		end
+
+		def enable_cpp_exceptions
+			add_global_attribute :cpp_exceptions, true
+		end
+
+		def enable_cpp_rtti
+			add_global_attribute :cpp_rtti, true
+		end
+
+		def enable_cpp_pic
+			add_global_attribute :cpp_pic, true
+		end
+
+		def enable_openmp
+			add_global_attribute :enable_openmp, true
+		end
+
+		def enable_se_exceptions
+			add_global_attribute :se_exceptions, true
+		end
+
+		def enable_msvc_cpp_extensions
+			add_attribute :msvc_enable_ms_extensions, true
+		end
+
+		def add_unit_test( *files )
+			if @project.globals.include_unit_tests
+				add_file( *files, 'UNIT_TEST' )
+			else
+				add_file( *files, 'EXCLUDE' )
+			end
+		end
+
+		def add_platform_header( *files )
+			if( !$ignore_platform_headers )
+				add_file( *files, 'EXCLUDE', 'NODOXYGEN' )
+			end
+		end
+
+		def add_performance_test( *files )
+			if @project.globals.enable_performance_test
+				add_file( *files, 'PERFORMANCE_TEST' )
+			else
+				add_file( *files, 'EXCLUDE' )
+			end
+		end
+
+		def add_cpp_define( *defines )
+			add_attribute :cpp_define, *defines
+		end
+
+		def add_global_cpp_define( *defines )
+			add_global_attribute :cpp_define, *defines
+		end
+
+		def add_ds_define( *defines )
+			add_global_attribute :dataschema_define, *defines
+		end
+
+		def add_cpp_include_dir( *paths )
+			add_path :cpp_include_dir, *paths
+		end
+
+		def add_ds_include_dir( *paths )
+			add_path :dataschema_include_dir, *paths
+		end
+
+		def add_protocol_include_dir( *paths )
+			add_path :protocol_include_dir, *paths
+		end
+
+		def add_memory_block( name, type, opts = {} )
+			new_block = MemoryBlock.new( name, type, opts )
+			add_global_attribute :memory_blocks, new_block
+			return new_block
+		end
+
+		def set_resource_platform( platform )
+			set_global_attribute :resource_platform, platform
+		end
+
+		def add_resource_allocator( suffix, memory_type )
+			new_allocator = ResourceAllocator.new( suffix, memory_type )
+			add_global_attribute :resource_allocators, new_allocator
+		end
+
+		def add_resource_configuration( name )
+			new_rc = ResourceConfiguration.new( name )
+			add_global_attribute :resource_configurations, new_rc
+			return new_rc
+		end
+
+		def add_resource_context( name, configuration, parent, opts = {} )
+			new_rc = ResourceContext.new( name, configuration, parent, opts )
+			add_global_attribute :resource_contexts, new_rc
+			return new_rc
+		end
+
+		def add_lib_dir( *libdirs )
+			add_global_path :lib_dir, *libdirs
+		end
+
+		def add_lib( *libs )
+			add_global_attribute :libs, *libs
+		end
+
+		def add_nso_lib( *libs )
+			add_global_attribute :nso_libs, *libs
+		end
+
+		def add_binary_file( *files )
+			add_file( *files, 'COPY_BINARY' )
+		end
+
+		def is_file_newer( source, target )
+			return !File.exist?( target.to_s ) || File.mtime(source.to_s) > File.mtime(target.to_s)
+		end
+
+		def copy_files( file_paths, target_dir )
+			file_paths.each { |source_path|
+				target_path = target_dir + source_path.basename
+
+				if is_file_newer( source_path, target_path )
+					puts "installing #{source_path.basename} to #{target_dir.to_s}"
+
+					if get_host_platform == :osx
+						FileUtils.rm_r target_path if File.exists? target_path
+					end
+					FileUtils.cp_r source_path, target_path, :remove_destination => true
+				end
+			}
+		end
+
+		def install_dataschemas( target_dir )
+			post_build_step do
+				source_dir = to_path(@project.build_path)
+				target_dir = to_path( target_dir )
+
+				# the dataschema files are called like the project:
+				base_name = to_path(@project.build_path)
+				# :TODO: :JK: make the json optional..
+				source_files = [ base_name + ( @project.name + ".ds" ), base_name + ( @project.name + "_tool.ds" ) ]
+
+				if @project.globals.export_ds_type_json
+					source_files << base_name + ( @project.name + "_tool.ds.json" )
+				end
+
+				FileUtils.mkdir_p target_dir
+				copy_files source_files, target_dir
+			end
+		end
+
+		def install_binaries( target_dir )
+			# :JK: only install compatible binaries:
+			if get_host_platform == get_target_platform
+				post_build_step do
+					source_dir = to_path(@project.build_path)
+					target_dir = to_path( target_dir )
+
+					# :TODO: install into project named sub-folder??
+					# target_dir += @project.name
+
+					# copy all files tagged as binary:
+					binary_files = @project.files.select {|f| f.tags.include?( 'COPY_BINARY' ) }.map {|f| [(f.context.get_attribute_value :copy_binary_target_dir), f.path] }
+
+					# add the executable:
+					binary_files << [ nil, to_path(@project.build_path) + ((@project.globals.target_name || @project.name) + ( @project.globals.target_extension || @project.get_target_executable_extension()) ) ]
+
+					if @project.get_target_platform() == :win32
+						# add the pdb:
+						binary_files << [nil, to_path(@project.build_path) + ((@project.globals.target_name || @project.name) + '.pdb') ]
+					end
+
+					binary_files.each { |subfolder,source_path|
+						subfolder = "" if !subfolder
+						target_path = target_dir + subfolder + source_path.basename
+
+						FileUtils.mkdir_p target_path.dirname
+
+						if !target_path.exist? || source_path.mtime != target_path.mtime
+							puts "installing #{source_path.basename} to #{target_path.to_s}"
+							if get_host_platform == :osx
+								FileUtils.rm_r target_path if File.exists? target_path
+							end
+							FileUtils.cp_r source_path, target_path, :remove_destination => true
+
+							# set the mtime of the target to the source mtime.. so we copy the file again when it changes..
+							FileUtils.touch target_path, :mtime => source_path.mtime
+						end
+					}
+				end
+			end
+		end
+
+		def install_library( target_dir )
+			post_build_step do
+				source_dir = to_path(@project.build_path)
+				target_dir = to_path( target_dir )
+
+				lib_path = @project.globals.target_path
+				if !lib_path
+					lib_path = to_path(@project.build_path) + ((@project.globals.target_name || @project.name) + ( @project.globals.target_extension || @project.get_target_executable_extension()) )
+				end
+
+				library_files = [ lib_path ]
+
+				FileUtils.mkdir_p target_dir
+				copy_files library_files, target_dir
+			end
+		end
+
+		def install_cids( target_dir )
+			post_build_step do
+				source_dir = to_path(@project.build_path)
+				target_dir = to_path( target_dir )
+
+				cid_files = @project.files.select {|f| f.tags.include?( '.cid' ) }.map {|f| f.path }
+
+				FileUtils.mkdir_p target_dir
+				copy_files cid_files, target_dir
+			end
+		end
+
+		def install_plugin( target_dir )
+
+			return if get_host_platform != get_target_platform
+
+			post_build_step do
+				source_dir = to_path( @project.build_path )
+				target_dir = to_path( target_dir ) + 'build' + @project.get_target_id().to_s + @project.get_build_config() + 'plugins'
+
+				#puts target_dir.to_s
+
+				plugin_files = []
+
+				# copy pdb at first!
+				if @project.get_target_platform() == :win32
+					# add the pdb:
+					plugin_files << to_path(@project.build_path) + ((@project.globals.target_name || @project.name) + '.pdb')
+				end
+
+				# add the executable:
+				plugin_files << to_path(@project.build_path) + ((@project.globals.target_name || @project.name) + ( @project.globals.target_extension || @project.get_target_executable_extension()) )
+
+				plugin_files.each do |source_path|
+
+					target_path = target_dir + source_path.basename
+
+					FileUtils.mkdir_p target_path.dirname
+					if is_file_newer( source_path, target_path )
+						puts "copy plugin file #{source_path.basename} to #{target_path.to_s}"
+						FileUtils.cp source_path, target_path
+					end
+				end
+			end
+		end
+
+		def add_dll( *dlls )
+			add_file( *dlls, 'COPY_BINARY' )
+		end
+
+		def add_prx( *prxs )
+			add_file( *prxs, 'COPY_BINARY' )
+		end
+
+		def set_cpp_optimization(values)
+			set_attribute :cpp_optimization, values
+		end
+
+		def enable_pointer_padding()
+			@project.globals.pointer_padding_enabled = !is_64bit_target
+		end
+
+		def add_shader_include_dir( *paths )
+			add_path :shader_include_dir, *paths
+		end
+
+		def add_shader_define( *defines )
+			add_attribute :shader_define, *defines
+		end
+
+		def unity_build_module(name,original_name=nil)
+			if @project.globals.unity_build && !@options[:disable_unity_build]
+				add_attribute :unity_set, name
+				add_auto_tags 'UNITY', :filter => tag('.cpp')
+				add_auto_tags 'UNITY', :filter => tag('.c')
+				add_auto_tags 'UNITY', :filter => tag('.cxx')
+			end
+			module_name = original_name ? original_name[ original_name.rindex( '/' ) ? original_name.rindex( '/' ) + 1 : 0, original_name.length ] : name
+
+			if !original_name
+				set_attribute :unity_build, true
+			end
+
+			set_attribute :module_name, module_name.to_s if not is_attribute_set :module_name
+		end
+
+		def declare_cpp_module(args = {})
+			export do
+				add_cpp_include_dir 'include'
+				(args[:export_imports] || []).each {|i| import i }
+			end
+			(args[:imports] || []).each {|i| import i }
+
+			unity_module_name = args[:unity_module_name] || @path.to_s[ path.to_s.rindex( '/' ) + 1, path.to_s.length ]
+
+			# activate unity build
+			unity_build_module( unity_module_name )
+			add_file 'sources/*.cpp', ''
+			add_file 'include/**/*.hpp', ''
+		end
+
+		# put all desired helper functions here.
+
+		def add_csharp_reference( *references )
+			add_global_attribute :csharp_refs, *references
+		end
+
+		def import_on_tags(name, *tags)
+			should_import = false
+			if (tags.size == 0)
+				should_import = true
+			else
+				if (tags[0][0] == '-')
+					should_import = true
+					tags.each do |t|
+						if (t[0] == '-')
+							should_import &= !@build_tags.include?(t[1..-1])
+						else
+							raise 'you must specify only negative or positive target tags'
+						end
+					end
+					#puts name + ' ' + should_import.to_s
+				else
+					tags.each { |t| should_import |= @build_tags.include?(t) }
+				end
+			end
+			if should_import
+				import name
+			end
+		end
+
+		def add_java_source_dir(dir)
+			path = to_path( dir ) + '**/*.java'
+			add_file path, ''
+		end
+	end
+
+	Context.class_eval do
+		def get_output_prefix
+			if is_attribute_set :unity_build
+				return ""
+			else
+				module_base_name = (get_attribute_value :module_base_name)
+				if !module_base_name
+					return ""
+				end
+
+				return module_base_name.split( '/' ).last + "_"
+			end
+		end
+	end
+end
+
+set_resource_platform( get_target_id.to_s )
+
+if get_target_id == :nx_win32
+	set_gamebuild_platform( "nx" )
+else
+	set_gamebuild_platform( get_target_id.to_s )
+end
+
+@tool_target_platforms = []
+@tool_target_platforms += [ "win32_x64" ] if can_build_platform( :win32 )
+@tool_target_platforms += [ "linux_x64" ] if can_build_platform( :linux )
+@tool_target_platforms += [ "osx_x64" ] if can_build_platform( :osx )
+
+@tool_configurations = @tool_target_platforms.product( [ "debug", "release" ] ).map { |platform, config| "#{platform}/#{config}" }
+
+# list of license actions:
+@project.define_license_action( :release_source, "Release your source code", :global_action )
+@project.define_license_action( :release_changed_source, "Release changes to the original source code of the library (not your application)", :global_action )
+@project.define_license_action( :show_in_source, "Show the license in your source code (only required when distributing the source code)" )
+@project.define_license_action( :show_in_product, "Show the license in your product" )
+@project.define_license_action( :show_logo_in_product, "Show a Logo in your product" )
+@project.define_license_action( :might_show_logo_in_product, "Might show a Logo in your product - not required" )
+@project.define_license_action( :show_in_documentation, "Show the license in your documentation/and/or other materials provided with the distribution" )
+@project.define_license_action( :buy_license, "Buy a commercial license" )
+@project.define_license_action( :check_license, "Not sure: please check the licenses/modules again" )
+
+# list of common licenses:
+@project.define_license_type( :zlib, "zLib", "http://www.zlib.net/zlib_license.html", [ :show_in_source ] )
+@project.define_license_type( :gpl2, "GPL 2.0", "http://www.gnu.org/licenses/old-licenses/gpl-2.0.html", [ :release_changed_source ] )
+@project.define_license_type( :gpl2le, "GPL 2.0 with Linking Exception", "", [ :release_changed_source ] )
+@project.define_license_type( :gplv3, "GPL 3.0", "http://www.gnu.org/licenses/gpl-3.0.en.html", [ :release_source, :show_in_source ] )
+@project.define_license_type( :bsd2, "BSD-2-Clause", "https://opensource.org/licenses/BSD-2-Clause", [ :show_in_documentation, :show_in_source ] )
+@project.define_license_type( :bsd3, "BSD-3-Clause", "https://opensource.org/licenses/BSD-3-Clause", [ :show_in_documentation, :show_in_source ] )
+@project.define_license_type( :mit, "MIT", "https://opensource.org/licenses/MIT", [ :show_in_source ] )
+@project.define_license_type( :public_domain, "Public Domain", "no license", [] )
+@project.define_license_type( :ftl, "Freetype", "http://git.savannah.gnu.org/cgit/freetype/freetype2.git/tree/docs/FTL.TXT", [ :show_in_documentation ] )
+@project.define_license_type( :khronos, "Khronos ", "", [] )
+@project.define_license_type( :isc, "ISC license ", "https://www.isc.org/downloads/software-support-policy/isc-license/", [ :show_in_documentation, :show_in_source ] )
+@project.define_license_type( :unknown, "Unknown License", "???", [ :check_license ] )
+@project.define_license_type( :apache2, "Apache Licence, V2", "https://www.apache.org/licenses/LICENSE-2.0", [ :show_in_documentation, :show_in_source ] )
+
+# create company specific defines and settings that communicate the build target to the code.
+case @project.build_tags
+when tag('debug')
+	add_global_attribute :cpp_define, 'KEEN_BUILD_DEBUG'
+	add_global_attribute :shader_define, 'KEEN_BUILD_DEBUG'
+	set_global_attribute :cpp_optimization, :none
+	set_global_attribute :shader_optimization, :none
+	set_global_attribute :output_shader_debug_info, true
+when tag('release')
+	add_global_attribute :cpp_define, 'KEEN_BUILD_RELEASE'
+	add_global_attribute :shader_define, 'KEEN_BUILD_RELEASE'
+	set_global_attribute :cpp_optimization, :full
+	set_global_attribute :shader_optimization, :full
+	set_global_attribute :output_shader_debug_info, true
+when tag('master')
+	add_global_attribute :cpp_define, 'KEEN_BUILD_MASTER'
+	add_global_attribute :shader_define, 'KEEN_BUILD_MASTER'
+	set_global_attribute :cpp_optimization, :full
+	set_global_attribute :shader_optimization, :full
+	set_global_attribute :output_shader_debug_info, false
+end
+
+if not @project.build_tags.empty?
+	platform_info = get_target_build_info()
+	target_define = "KEEN_TARGET_#{platform_info.id.upcase}"
+	platform_define = "KEEN_PLATFORM_#{platform_info.platform.upcase}"
+	cpu_define = "KEEN_CPU_#{platform_info.cpu.upcase}"
+	endian_define = "KEEN_#{platform_info.endianness.upcase}_ENDIAN"
+
+	if is_64bit_target
+		pointer_define = "KEEN_64_BIT_POINTERS"
+	else
+		pointer_define = "KEEN_32_BIT_POINTERS"
+	end
+
+	#puts "build=#{target_define} platform=#{platform_define} cpu=#{cpu_define} endian=#{endian_define} pointer=#{pointer_define}"
+
+	add_global_attribute :cpp_define,			target_define, platform_define, cpu_define, endian_define, pointer_define
+	add_global_attribute :shader_define,		target_define, platform_define
+	add_global_attribute :dataschema_define,	target_define, platform_define
+end
+
+case @project.get_target_platform()
+when :win32
+	set_msvc_target( :exe )
+
+	case @build_tags
+	when tag('debug')
+		set_msvc_build_options(:dynamic, :multi)
+	else
+		set_msvc_build_options(:static, :multi)
+	end
+
+	# we are targeting at least Windows 2003 Server / Windows XPSP2
+	#winver = get_target_id == :win32_x86 ? '0x0501' : '0x0502'
+
+	#add_global_attribute :cpp_define, "WINVER=#{winver}"
+	#add_global_attribute :cpp_define, "_WIN32_WINNT=#{winver}"
+	#add_global_attribute :cpp_define, 'WIN32_LEAN_AND_MEAN'
+
+	add_global_attribute :cpp_define, '_BIND_TO_CURRENT_CRT_VERSION=1'
+	add_global_attribute :cpp_define, '_CRT_SECURE_NO_DEPRECATE'
+	add_global_attribute :cpp_define, '_SCL_SECURE_NO_WARNINGS'
+	add_global_attribute :cpp_define, 'UNICODE'
+
+	add_attribute :msvc_disabled_warnings, 4686 #'keen::resource::finishLoadResource': possible change in behavior, change in UDT return calling convention
+
+when :ps4
+	add_global_attribute :vcproj_platform, "ORBIS"
+	add_global_attribute :vcproj_executable_extension, ".elf"
+
+when :linux
+
+when :nds
+
+when :osx
+
+when :ios
+
+when :android
+	platform = case @project.get_target_cpu
+	when :x86
+		'Win32'
+	when :x64
+		'x64'
+	when :arm32
+		'ARM'
+	when :arm64
+		'ARM64'
+	end
+
+	add_global_attribute :vcproj_platform, platform
+
+when :uwp
+	set_msvc_target( :exe )
+
+	set_msvc_build_options(:dynamic, :multi)
+
+	platform = case @project.get_target_cpu
+	when :x86
+		'Win32'
+	when :x64
+		'x64'
+	when :arm32
+		'ARM'
+	when :arm64
+		'ARM64'
+	end
+
+	add_global_attribute :vcproj_platform, platform
+	add_attribute :msvc_disabled_warnings, 4686 #'keen::resource::finishLoadResource': possible change in behavior, change in UDT return calling convention
+
+when :xb1
+	set_msvc_target( :exe )
+	set_msvc_build_options(:dynamic, :multi)
+	add_global_attribute :vcproj_platform, 'Durango'
+	add_attribute :msvc_disabled_warnings, 4686 #'keen::resource::finishLoadResource': possible change in behavior, change in UDT return calling convention
+
+	add_global_attribute :cpp_define, 'WINVER=0x602'
+	add_global_attribute :cpp_define, '_WIN32_WINNT=0x602'
+
+when :nx
+	if @project.get_target_id == :nx
+		add_global_attribute :vcproj_platform, 'NX64'
+	end
+
+	add_attribute :msvc_disabled_warnings, 4686 #'keen::resource::finishLoadResource': possible change in behavior, change in UDT return calling convention
+end
+
+if (!is_master_build || @build_tags.include?( 'qa' )) && (get_target_platform == :nx || get_target_platform == :android)
+	module_options 'compiler/common', :enable_host_ip_compiler => true
+
+	user_name = ENV['USERNAME'] || ENV['USER']
+	add_global_attribute :cpp_define, 'KEEN_HOST_USERNAME=' + user_name
+end
+
+@project.globals.doxygen_import_files = [to_path(File.dirname(__FILE__)) + 'doxygen_configuration_keen.txt']
+
+# set platform defines for eclipse
+context do
+	case get_target_id
+	when :win32_x64, :win32_x86
+		add_cpp_define '_MSC_VER', 'WIN32'
+	when :linux_x86, :linux_x64
+		add_cpp_define '__GNUC__', '__GNUG__', '__linux__'
+	when :osx_x86, :osx_x64
+		add_cpp_define '__GNUC__', '__GNUG__'
+		add_cpp_define '__LITTLE_ENDIAN__'
+		add_cpp_define '__APPLE_CC__', '__APPLE__', '__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__'
+	when :ps4
+		add_cpp_define 'KEEN_TARGET_CPU_X86_64'
+	end
+end

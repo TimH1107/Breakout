@@ -1,0 +1,65 @@
+inject '../shared/clang_base.lace'
+
+! win32-clang.lace
+
+@project.globals.win32_clang_path = add_blob( "core", "platform/windows/clang-7.0.0", "66498a64d7f8236333490a7f328563e020e2cdc1" )
+
+#add_global_path :cpp_system_include_dir, @project.globals.win32_clang_path + 'lib/clang/7.0.0/include'
+
+class ClangCompiler < ClangCompilerBase
+	def get_compiler_path
+		@project.globals.win32_clang_path + 'bin/clang.exe'
+	end
+	
+	def get_platform_options()
+		platform_options = super
+		
+		platform_options << '-msse4.1'
+		
+		return platform_options
+	end
+	
+	def get_disabled_platform_warnings()
+		disabled_platform_warnings = []
+		
+		disabled_platform_warnings << 'no-expansion-to-defined' 
+		#disabled_platform_warnings << 'no-ignored-attributes'
+		
+		return disabled_platform_warnings;
+	end
+end
+
+class ClangLinker < ClangLinkerBase
+	def get_linker_path
+		@project.globals.win32_clang_path + 'bin/clang.exe'
+	end
+	
+	def get_output_extension
+		'.exe'
+	end
+	
+	def get_platform_options()
+		platform_options = super
+		
+		return platform_options
+	end
+	
+	def get_platform_pre_files_options
+		platform_options = super
+		
+		return platform_options
+	end
+
+	def get_platform_post_files_options
+		platform_options = super
+		
+		return platform_options
+	end
+end
+
+define_compiler( ClangCompiler, :input_pattern => tag('.cpp') | tag('.c'), :dependency_pattern => tag('.hpp') | tag('.h'), :output_name => 'cpp_compiler/%.obj') do
+end
+
+define_compiler( ClangLinker, :input_pattern => tag('.obj'), :output_tags => [ '.exe', '.dll' ] ) do
+end
+	
